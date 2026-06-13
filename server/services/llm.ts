@@ -1,6 +1,5 @@
 import OpenAI from "openai";
-import { prisma } from "../db.js";
-import { decryptSecret } from "../utils/crypto.js";
+import { getSecret } from "./secrets.js";
 
 export type LlmProviderId = "openai" | "openrouter";
 
@@ -23,16 +22,12 @@ const credentialDomains: Record<LlmProviderId, string> = {
 
 async function getApiKey(provider: LlmProviderId) {
   const envKey = provider === "openai" ? process.env.OPENAI_API_KEY : process.env.OPENROUTER_API_KEY;
-  if (envKey) return envKey;
-
-  const credential = await prisma.credential.findUnique({
-    where: { domain: credentialDomains[provider] }
-  });
-  if (!credential) {
+  const apiKey = await getSecret(credentialDomains[provider], envKey);
+  if (!apiKey) {
     throw new Error(`Missing ${provider} API key. Add it in Settings.`);
   }
 
-  return decryptSecret(credential.encrypted);
+  return apiKey;
 }
 
 export async function createLlmClient(provider: LlmProviderId) {

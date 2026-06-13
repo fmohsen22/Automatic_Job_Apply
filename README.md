@@ -1,6 +1,6 @@
 # Automate JobApply
 
-Local AI job-search and assisted-apply workspace. The app is designed to run on your own Mac or Windows computer, with local SQLite storage, encrypted settings, base CV import/versioning, safety defaults, and audit log.
+Local AI job-search and assisted-apply workspace. The app is designed to run on your own Mac or Windows computer, with local SQLite storage, encrypted settings, base CV import/versioning, Tavily job search, model-ranked job lists, safety defaults, and audit log.
 
 ## One-Click Local Run
 
@@ -42,6 +42,8 @@ Open Settings and enter:
 - CV Tailoring Provider: recommended `OpenRouter`.
 - CV Tailoring Model: recommended `anthropic/claude-sonnet-4.5` for now.
 
+After saving an OpenRouter key, Settings loads recommended OpenRouter models into dropdowns. Claude Sonnet remains the default for CV tailoring, but you can choose another available model.
+
 Keys are stored encrypted on the local computer and are not returned to the browser after saving.
 
 ## Environment
@@ -61,6 +63,21 @@ Keys are stored encrypted on the local computer and are not returned to the brow
 
 Real `.env` files are ignored by git.
 
+## Job Search
+
+Open `Job Search`, enter a role and city, then click `Search Jobs`.
+
+The M2 flow:
+
+1. Calls Tavily search with the saved Tavily API key.
+2. Normalizes and dedupes results into local SQLite.
+3. Reads the latest CV version.
+4. Ranks each job with the configured search model.
+5. Falls back to Tavily relevance if LLM ranking is unavailable.
+6. Shows jobs sorted by fit score with reasons and posting links.
+
+No API keys should be pasted into chat or committed to git. Enter them only in the local Settings UI.
+
 ## Autonomy Levels
 
 - `L0 Assist`: the app prepares documents and guidance; you click and submit.
@@ -78,7 +95,7 @@ Secrets are encrypted at rest, never returned to the browser after saving, and n
 ## Milestones
 
 - M1: Scaffold, dashboard shell, SQLite/Prisma, settings, base CV import.
-- M2: Tavily/job-board search, dedupe, fit ranking.
+- M2: Tavily search, dedupe, fit ranking, ranked job list UI, OpenRouter model dropdown.
 - M3: Tailoring, review UI, approval gate, document rendering.
 - M4: Playwright apply worker, ATS adapters, screenshots, dry-run.
 - M5: `ui-test-pilot` dashboard scenarios from `../ui-test-pilot` via file dependency.

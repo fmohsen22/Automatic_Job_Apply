@@ -8,12 +8,13 @@ import {
   History,
   RefreshCw,
   Save,
+  Search,
   Settings as SettingsIcon
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import "./styles.css";
 
-type View = "dashboard" | "settings" | "base-cv" | "versions" | "audit";
+type View = "dashboard" | "search" | "settings" | "base-cv" | "versions" | "audit";
 type AutonomyLevel = "L0" | "L1" | "L2";
 type LlmProviderId = "openai" | "openrouter";
 type ApiState<T> = { data: T; loading: boolean; error: string | null };
@@ -68,6 +69,28 @@ type AuditEvent = {
   createdAt: string;
 };
 
+type OpenRouterModel = {
+  id: string;
+  name: string;
+  contextLength?: number;
+  promptPrice?: string;
+  completionPrice?: string;
+};
+
+type Job = {
+  id: string;
+  source: string;
+  url: string;
+  company: string;
+  title: string;
+  location?: string | null;
+  descr: string;
+  fitScore: number;
+  fitReasons: string[];
+  status: string;
+  updatedAt: string;
+};
+
 const autonomyLabels: Record<AutonomyLevel, string> = {
   L0: "Assist",
   L1: "Semi-auto",
@@ -76,6 +99,7 @@ const autonomyLabels: Record<AutonomyLevel, string> = {
 
 const views: Array<{ id: View; label: string; icon: LucideIcon }> = [
   { id: "dashboard", label: "Dashboard", icon: Gauge },
+  { id: "search", label: "Job Search", icon: Search },
   { id: "settings", label: "Settings", icon: SettingsIcon },
   { id: "base-cv", label: "Base CV", icon: FileUp },
   { id: "versions", label: "CV Versions", icon: FilePenLine },
@@ -190,12 +214,107 @@ function App() {
 
       <main className="main">
         {activeView === "dashboard" && <Dashboard />}
+        {activeView === "search" && <JobSearch />}
         {activeView === "settings" && <SettingsPage />}
         {activeView === "base-cv" && <BaseCvImport />}
         {activeView === "versions" && <CvVersions />}
         {activeView === "audit" && <AuditLog />}
       </main>
     </div>
+  );
+}
+
+function JobSearch() {
+  const settings = useApi<SettingsPayload>("/api/settings", emptySettings);
+  const jobs = useApi<Job[]>("/api/jobs", []);
+  const [role, setRole] = useState("");
+  const [city, setCity] = useState("");
+  const [maxResults, setMaxResults] = useState(10);
+  const [status, setStatus] = useState("");
+
+  useEffect(() => {
+    if (!city && settings.data.defaultCity) {
+      setCity(settings.data.defaultCity);
+    }
+  }, [settings.data.defaultCity, city]);
+
+  const searchJobs = async (event: React.FormEvent) => {
+    event.preventDefault();
+    setStatus("Searching Tavily and ranking jobs");
+    try {
+      const response = await sendJson<{ jobs: Job[] }>("/api/jobs/search", "POST", { role, city, maxResults });
+      setStatus(`Found ${response.jobs.length} jobs`);
+      await jobs.refresh();
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : "Search failed");
+    }
+  };
+
+  return (
+    <>
+      <PageHeader
+        title="Job Search"
+        description="Search Tavily for jobs, store matches locally, and rank them against the latest CV."
+        action={<IconButton icon={RefreshCw} label="Refresh Jobs" onClick={() => void jobs.refresh()} primary />}
+      />
+      <form className="panel search-form" onSubmit={(event) => void searchJobs(event)}>
+        <Field label="Role">
+          <input
+            onChange={(event) => setRole(event.target.value)}
+            placeholder="Frontend Engineer"
+            type="text"
+            value={role}
+          />
+        </Field>
+        <Field label="City">
+          <input
+            onChange={(event) => setCity(event.target.value)}
+            placeholder="Vienna"
+            type="text"
+            value={city}
+          />
+        </Field>
+        <Field label="Max Results">
+          <input
+            max={20}
+            min={1}
+            onChange={(event) => setMaxResults(Number(event.target.value))}
+            type="number"
+            value={maxResults}
+          />
+        </Field>
+        <div className="form-footer">
+          <span>{status || "Uses Tavily for search and your configured search model for ranking."}</span>
+          <IconButton icon={Search} label="Search Jobs" primary submit disabled={!role.trim() || !city.trim()} />
+        </div>
+      </form>
+      <section className="panel">
+        <div className="panel-header">
+          <h2>Ranked Jobs</h2>
+          <span>{jobs.loading ? "Loading" : jobs.error ? `Offline: ${jobs.error}` : `${jobs.data.length} saved`}</span>
+        </div>
+        {jobs.data.length === 0 ? <p className="empty-state">No jobs yet. Run a search after saving your Tavily key.</p> : null}
+        <div className="job-list">
+          {jobs.data.map((job) => (
+            <article className="job-card" key={job.id}>
+              <div className="job-main">
+                <div>
+                  <span className="job-company">{job.company}</span>
+                  <h3>{job.title}</h3>
+                  <p>{job.location ?? "Location not specified"} - {job.source} - {formatDate(job.updatedAt)}</p>
+                </div>
+                <StatusPill state={job.fitScore >= 75 ? "online" : job.fitScore >= 50 ? "warning" : "offline"} label={`${job.fitScore}% fit`} />
+              </div>
+              <p className="job-description">{job.descr}</p>
+              <ul className="reason-list">
+                {job.fitReasons.slice(0, 4).map((reason) => <li key={reason}>{reason}</li>)}
+              </ul>
+              <a className="button job-link" href={job.url} rel="noreferrer" target="_blank">Open Posting</a>
+            </article>
+          ))}
+        </div>
+      </section>
+    </>
   );
 }
 
@@ -290,8 +409,12 @@ function Dashboard() {
 
 function SettingsPage() {
   const { data, loading, error, refresh } = useApi<SettingsPayload>("/api/settings", emptySettings);
+  const models = useApi<OpenRouterModel[]>("/api/models/openrouter", []);
   const [form, setForm] = useState<SettingsPayload>(emptySettings);
   const [saveState, setSaveState] = useState("");
+  const openRouterModels = models.data.length
+    ? models.data
+    : [{ id: "anthropic/claude-sonnet-4.5", name: "Anthropic: Claude Sonnet 4.5" }];
 
   useEffect(() => {
     setForm({
@@ -364,12 +487,23 @@ function SettingsPage() {
           </select>
         </Field>
         <Field label="Search Model">
-          <input
-            onChange={(event) => setForm({ ...form, searchModel: event.target.value })}
-            placeholder="gpt-5.5"
-            type="text"
-            value={form.searchModel ?? ""}
-          />
+          {form.searchProvider === "openrouter" ? (
+            <select
+              onChange={(event) => setForm({ ...form, searchModel: event.target.value })}
+              value={form.searchModel ?? "anthropic/claude-sonnet-4.5"}
+            >
+              {openRouterModels.map((model) => (
+                <option key={model.id} value={model.id}>{modelLabel(model)}</option>
+              ))}
+            </select>
+          ) : (
+            <input
+              onChange={(event) => setForm({ ...form, searchModel: event.target.value })}
+              placeholder="gpt-5.5"
+              type="text"
+              value={form.searchModel ?? ""}
+            />
+          )}
         </Field>
         <Field label="CV Tailoring Provider">
           <select
@@ -381,13 +515,31 @@ function SettingsPage() {
           </select>
         </Field>
         <Field label="CV Tailoring Model">
-          <input
-            onChange={(event) => setForm({ ...form, tailorModel: event.target.value })}
-            placeholder="anthropic/claude-sonnet-4.5"
-            type="text"
-            value={form.tailorModel ?? ""}
-          />
+          {form.tailorProvider === "openrouter" ? (
+            <select
+              onChange={(event) => setForm({ ...form, tailorModel: event.target.value })}
+              value={form.tailorModel ?? "anthropic/claude-sonnet-4.5"}
+            >
+              {openRouterModels.map((model) => (
+                <option key={model.id} value={model.id}>{modelLabel(model)}</option>
+              ))}
+            </select>
+          ) : (
+            <input
+              onChange={(event) => setForm({ ...form, tailorModel: event.target.value })}
+              placeholder="gpt-5.5"
+              type="text"
+              value={form.tailorModel ?? ""}
+            />
+          )}
         </Field>
+        <div className="form-hint">
+          {models.loading
+            ? "Loading OpenRouter model list"
+            : models.error
+              ? `OpenRouter model list unavailable; using fallback Claude option. ${models.error}`
+              : `${models.data.length} OpenRouter models available`}
+        </div>
         <div className="form-section">
           <h2>Local Defaults</h2>
           <p>These control the default city and approval behavior for future search and apply runs.</p>
@@ -648,6 +800,11 @@ function formatDate(value: string) {
 
 function titleCase(value: string) {
   return value.replace(/[-_]/g, " ").replace(/\b\w/g, (letter) => letter.toUpperCase());
+}
+
+function modelLabel(model: OpenRouterModel) {
+  const context = model.contextLength ? ` - ${Math.round(model.contextLength / 1000)}k ctx` : "";
+  return `${model.name} (${model.id})${context}`;
 }
 
 createRoot(document.getElementById("root")!).render(

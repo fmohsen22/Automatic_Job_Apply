@@ -3,6 +3,7 @@ import { z } from "zod";
 import { prisma } from "../db.js";
 import { encryptSecret } from "../utils/crypto.js";
 import { audit } from "../services/audit.js";
+import { readSettings } from "../services/settings.js";
 
 const router = Router();
 
@@ -24,22 +25,6 @@ const domains = {
   openrouterApiKey: "openrouter.ai",
   tavilyApiKey: "api.tavily.com"
 };
-
-const settingDefaults = {
-  defaultCity: process.env.DEFAULT_CITY || "",
-  defaultAutonomyLevel: process.env.DEFAULT_AUTONOMY_LEVEL || "L1",
-  defaultModel: process.env.DEFAULT_MODEL || "gpt-5.5",
-  searchProvider: process.env.SEARCH_LLM_PROVIDER || "openai",
-  searchModel: process.env.SEARCH_MODEL || process.env.DEFAULT_MODEL || "gpt-5.5",
-  tailorProvider: process.env.TAILOR_LLM_PROVIDER || "openrouter",
-  tailorModel: process.env.TAILOR_MODEL || "anthropic/claude-sonnet-4.5"
-};
-
-async function readSettings() {
-  const rows = await prisma.appSetting.findMany();
-  const values = Object.fromEntries(rows.map((row) => [row.key, row.value]));
-  return { ...settingDefaults, ...values };
-}
 
 router.get("/", async (_req, res) => {
   const [credentials, settings] = await Promise.all([prisma.credential.findMany(), readSettings()]);

@@ -1,0 +1,103 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model JobProfile {
+  id        String   @id @default(cuid())
+  city      String
+  roles     String
+  filters   String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model Job {
+  id        String   @id @default(cuid())
+  source    String
+  url       String   @unique
+  company   String
+  title     String
+  location  String?
+  descr     String
+  fitScore  Int      @default(0)
+  fitReasons String?
+  status    String   @default("FOUND")
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  docSets   DocSet[]
+  runs      ApplicationRun[]
+}
+
+model CvVersion {
+  id          String   @id @default(cuid())
+  cvKey       String   @default("default")
+  version     Int      @default(1)
+  label       String
+  json        String
+  source      String?
+  contentHash String?
+  createdAt   DateTime @default(now())
+  docSets     DocSet[]
+
+  @@unique([cvKey, version])
+  @@index([cvKey])
+}
+
+model DocSet {
+  id          String    @id @default(cuid())
+  jobId       String?
+  cvVersionId String
+  coverLetter String?
+  checklist   String?
+  status      String    @default("DRAFT")
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  job         Job?      @relation(fields: [jobId], references: [id])
+  cvVersion   CvVersion @relation(fields: [cvVersionId], references: [id])
+}
+
+model ApplicationRun {
+  id            String   @id @default(cuid())
+  jobId         String
+  autonomyLevel String   @default("L1")
+  steps         String   @default("[]")
+  status        String   @default("APPROVED")
+  screenshots   String   @default("[]")
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+  job           Job      @relation(fields: [jobId], references: [id])
+}
+
+model Credential {
+  id        String   @id @default(cuid())
+  domain    String   @unique
+  encrypted String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model AuditEvent {
+  id        String   @id @default(cuid())
+  action    String
+  entity    String?
+  entityId  String?
+  summary   String
+  metadata  String?
+  createdAt DateTime @default(now())
+}
+
+model EmailThread {
+  id        String   @id @default(cuid())
+  providerId String  @unique
+  subject   String
+  summary   String?
+  draftReply String?
+  status    String   @default("read_only")
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}

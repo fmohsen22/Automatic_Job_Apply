@@ -47,5 +47,5 @@ if (!(await exists("node_modules"))) {
 
 await run("npm", ["run", "prisma:push"]);
 
-setTimeout(() => openBrowser("http://127.0.0.1:5173"), 1200);
+setTimeout(() => openBrowser("http://127.0.0.1:4173"), 1200);
 await run("npm", ["run", "dev"]);

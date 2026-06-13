@@ -1,4 +1,3 @@
-import type { LlmProviderId } from "./llm.js";
 import { runLlm } from "./llm.js";
 
 export interface RankingInput {
@@ -7,14 +6,12 @@ export interface RankingInput {
   company: string;
   description: string;
   fallbackScore: number;
-  provider: LlmProviderId;
   model: string;
 }
 
 export async function rankJob(input: RankingInput) {
   try {
     const response = await runLlm({
-      provider: input.provider,
       model: input.model,
       responseFormat: "json",
       messages: [

@@ -378,6 +378,19 @@ textarea {
   font-size: 0.9rem;
 }
 
+.folder-import {
+  border: 1px dashed #cdd6e2;
+  border-radius: 8px;
+  display: grid;
+  gap: 10px;
+  padding: 14px;
+}
+
+.folder-import p {
+  color: #64748b;
+  margin: 4px 0 0;
+}
+
 .search-form {
   display: grid;
   gap: 18px;

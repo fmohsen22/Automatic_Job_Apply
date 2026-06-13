@@ -6,7 +6,6 @@ import { rankJob } from "../services/jobRanking.js";
 import { readSettings } from "../services/settings.js";
 import { searchTavily, type TavilyResult } from "../services/tavily.js";
 import { fromJsonString, toJsonString } from "../utils/json.js";
-import type { LlmProviderId } from "../services/llm.js";
 import { asyncRoute } from "../utils/asyncRoute.js";
 
 const router = Router();
@@ -55,8 +54,7 @@ router.post("/search", asyncRoute(async (req, res) => {
       company: job.company,
       description: job.descr,
       fallbackScore: job.fallbackScore,
-      provider: settings.searchProvider as LlmProviderId,
-      model: settings.searchModel
+      model: settings.searchModel || "google/gemini-2.5-flash-lite"
     });
 
     const saved = await prisma.job.upsert({
@@ -92,8 +90,8 @@ router.post("/search", asyncRoute(async (req, res) => {
     metadata: {
       tavilyResults: tavily.results.length,
       savedJobs: ranked.length,
-      rankingProvider: settings.searchProvider,
-      rankingModel: settings.searchModel
+      rankingProvider: "openrouter",
+      rankingModel: settings.searchModel || "google/gemini-2.5-flash-lite"
     }
   });
 

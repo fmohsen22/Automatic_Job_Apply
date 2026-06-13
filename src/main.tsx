@@ -16,7 +16,6 @@ import "./styles.css";
 
 type View = "dashboard" | "search" | "settings" | "base-cv" | "versions" | "audit";
 type AutonomyLevel = "L0" | "L1" | "L2";
-type LlmProviderId = "openai" | "openrouter";
 type ApiState<T> = { data: T; loading: boolean; error: string | null };
 
 type DashboardSummary = {
@@ -36,17 +35,14 @@ type DashboardSummary = {
 };
 
 type SettingsPayload = {
-  openaiApiKey?: string;
   openrouterApiKey?: string;
   tavilyApiKey?: string;
   defaultCity?: string;
   defaultAutonomyLevel?: AutonomyLevel;
-  defaultModel?: string;
-  searchProvider?: LlmProviderId;
   searchModel?: string;
-  tailorProvider?: LlmProviderId;
   tailorModel?: string;
-  openaiApiKeySet?: boolean;
+  applyModel?: string;
+  generalModel?: string;
   openrouterApiKeySet?: boolean;
   tavilyApiKeySet?: boolean;
 };
@@ -75,6 +71,7 @@ type OpenRouterModel = {
   contextLength?: number;
   promptPrice?: string;
   completionPrice?: string;
+  category: "search" | "tailor" | "apply" | "general";
 };
 
 type Job = {
@@ -113,16 +110,14 @@ const emptySummary: DashboardSummary = {
 };
 
 const emptySettings: SettingsPayload = {
-  openaiApiKey: "",
   openrouterApiKey: "",
   tavilyApiKey: "",
   defaultCity: "",
   defaultAutonomyLevel: "L1",
-  defaultModel: "gpt-5.5",
-  searchProvider: "openai",
-  searchModel: "gpt-5.5",
-  tailorProvider: "openrouter",
-  tailorModel: "anthropic/claude-sonnet-4.5"
+  searchModel: "",
+  tailorModel: "anthropic/claude-sonnet-4.5",
+  applyModel: "anthropic/claude-sonnet-4.5",
+  generalModel: "anthropic/claude-sonnet-4.5"
 };
 
 const fallbackAudit: AuditEvent[] = [
@@ -412,19 +407,32 @@ function SettingsPage() {
   const models = useApi<OpenRouterModel[]>("/api/models/openrouter", []);
   const [form, setForm] = useState<SettingsPayload>(emptySettings);
   const [saveState, setSaveState] = useState("");
+  const [modelQuery, setModelQuery] = useState("");
   const openRouterModels = models.data.length
     ? models.data
-    : [{ id: "anthropic/claude-sonnet-4.5", name: "Anthropic: Claude Sonnet 4.5" }];
+    : [{ id: "anthropic/claude-sonnet-4.5", name: "Anthropic: Claude Sonnet 4.5", category: "tailor" as const }];
 
   useEffect(() => {
     setForm({
       ...emptySettings,
       ...data,
-      openaiApiKey: "",
       openrouterApiKey: "",
       tavilyApiKey: ""
     });
   }, [data]);
+
+  useEffect(() => {
+    if (models.data.length > 0) {
+      setForm((current) => {
+        const next: SettingsPayload = { ...current };
+        if (!next.searchModel) next.searchModel = chooseModel(models.data, "search")?.id ?? next.searchModel;
+        if (!next.tailorModel) next.tailorModel = chooseModel(models.data, "tailor")?.id ?? next.tailorModel;
+        if (!next.applyModel) next.applyModel = chooseModel(models.data, "apply")?.id ?? next.applyModel;
+        if (!next.generalModel) next.generalModel = chooseModel(models.data, "general")?.id ?? next.generalModel;
+        return next;
+      });
+    }
+  }, [models.data.length]);
 
   const saveSettings = async (event: React.FormEvent) => {
     event.preventDefault();
@@ -440,21 +448,12 @@ function SettingsPage() {
 
   return (
     <>
-      <PageHeader title="Settings" description="Configure local API keys, model routing, autonomy level, and search defaults." />
+      <PageHeader title="Settings" description="Configure OpenRouter, Tavily, model routing, autonomy level, and search defaults." />
       <form className="panel form-grid" onSubmit={(event) => void saveSettings(event)}>
         <div className="form-section">
           <h2>API Keys</h2>
           <p>Keys are stored encrypted on this computer and are not returned to the browser after saving.</p>
         </div>
-        <Field label={`OpenAI API Key${data.openaiApiKeySet ? " - saved" : ""}`}>
-          <input
-            autoComplete="off"
-            onChange={(event) => setForm({ ...form, openaiApiKey: event.target.value })}
-            placeholder="Leave blank to keep current key"
-            type="password"
-            value={form.openaiApiKey ?? ""}
-          />
-        </Field>
         <Field label={`OpenRouter API Key${data.openrouterApiKeySet ? " - saved" : ""}`}>
           <input
             autoComplete="off"
@@ -475,63 +474,52 @@ function SettingsPage() {
         </Field>
         <div className="form-section">
           <h2>Model Routing</h2>
-          <p>Recommended: ChatGPT/OpenAI for job search ranking, Claude via OpenRouter for CV tailoring.</p>
+          <p>Recommended: fast OpenRouter models for search, Claude for tailoring and apply steps.</p>
         </div>
-        <Field label="Search Provider">
-          <select
-            onChange={(event) => setForm({ ...form, searchProvider: event.target.value as LlmProviderId })}
-            value={form.searchProvider ?? "openai"}
-          >
-            <option value="openai">OpenAI / ChatGPT</option>
-            <option value="openrouter">OpenRouter</option>
-          </select>
-        </Field>
+        <label className="field">
+          <span>Filter Models</span>
+          <input
+            onChange={(event) => setModelQuery(event.target.value)}
+            placeholder="grok fast, claude, flash..."
+            type="text"
+            value={modelQuery}
+          />
+        </label>
         <Field label="Search Model">
-          {form.searchProvider === "openrouter" ? (
-            <select
-              onChange={(event) => setForm({ ...form, searchModel: event.target.value })}
-              value={form.searchModel ?? "anthropic/claude-sonnet-4.5"}
-            >
-              {openRouterModels.map((model) => (
-                <option key={model.id} value={model.id}>{modelLabel(model)}</option>
-              ))}
-            </select>
-          ) : (
-            <input
-              onChange={(event) => setForm({ ...form, searchModel: event.target.value })}
-              placeholder="gpt-5.5"
-              type="text"
-              value={form.searchModel ?? ""}
-            />
-          )}
+          <ModelSelect
+            filter={modelQuery}
+            models={openRouterModels}
+            purpose="search"
+            value={form.searchModel ?? ""}
+            onChange={(value) => setForm({ ...form, searchModel: value })}
+          />
         </Field>
-        <Field label="CV Tailoring Provider">
-          <select
-            onChange={(event) => setForm({ ...form, tailorProvider: event.target.value as LlmProviderId })}
-            value={form.tailorProvider ?? "openrouter"}
-          >
-            <option value="openrouter">OpenRouter</option>
-            <option value="openai">OpenAI / ChatGPT</option>
-          </select>
+        <Field label="Tailor Model">
+          <ModelSelect
+            filter={modelQuery}
+            models={openRouterModels}
+            purpose="tailor"
+            value={form.tailorModel ?? ""}
+            onChange={(value) => setForm({ ...form, tailorModel: value })}
+          />
         </Field>
-        <Field label="CV Tailoring Model">
-          {form.tailorProvider === "openrouter" ? (
-            <select
-              onChange={(event) => setForm({ ...form, tailorModel: event.target.value })}
-              value={form.tailorModel ?? "anthropic/claude-sonnet-4.5"}
-            >
-              {openRouterModels.map((model) => (
-                <option key={model.id} value={model.id}>{modelLabel(model)}</option>
-              ))}
-            </select>
-          ) : (
-            <input
-              onChange={(event) => setForm({ ...form, tailorModel: event.target.value })}
-              placeholder="gpt-5.5"
-              type="text"
-              value={form.tailorModel ?? ""}
-            />
-          )}
+        <Field label="Apply Model">
+          <ModelSelect
+            filter={modelQuery}
+            models={openRouterModels}
+            purpose="apply"
+            value={form.applyModel ?? ""}
+            onChange={(value) => setForm({ ...form, applyModel: value })}
+          />
+        </Field>
+        <Field label="General Model">
+          <ModelSelect
+            filter={modelQuery}
+            models={openRouterModels}
+            purpose="general"
+            value={form.generalModel ?? ""}
+            onChange={(value) => setForm({ ...form, generalModel: value })}
+          />
         </Field>
         <div className="form-hint">
           {models.loading
@@ -542,7 +530,7 @@ function SettingsPage() {
         </div>
         <div className="form-section">
           <h2>Local Defaults</h2>
-          <p>These control the default city and approval behavior for future search and apply runs.</p>
+          <p>These control the default city and approval behavior for future search, tailoring, and apply runs.</p>
         </div>
         <Field label="Autonomy">
           <select
@@ -564,14 +552,6 @@ function SettingsPage() {
             value={form.defaultCity ?? ""}
           />
         </Field>
-        <Field label="Fallback Model">
-          <input
-            onChange={(event) => setForm({ ...form, defaultModel: event.target.value })}
-            placeholder="gpt-5.5"
-            type="text"
-            value={form.defaultModel ?? ""}
-          />
-        </Field>
         <div className="form-footer">
           <span>{loading ? "Loading settings" : error ? `Using local defaults: ${error}` : saveState}</span>
           <IconButton icon={Save} label="Save Settings" primary submit />
@@ -586,6 +566,7 @@ function BaseCvImport() {
   const [label, setLabel] = useState("Base CV");
   const [mode, setMode] = useState<"text" | "json">("text");
   const [status, setStatus] = useState("");
+  const [folderFiles, setFolderFiles] = useState<File[]>([]);
 
   const importCv = async (event: React.FormEvent) => {
     event.preventDefault();
@@ -599,9 +580,30 @@ function BaseCvImport() {
     }
   };
 
+  const importFolder = async () => {
+    if (!folderFiles.length) return;
+    setStatus("Importing folder");
+    try {
+      const files = await Promise.all(
+        folderFiles.map(async (file) => ({
+          name: file.name,
+          type: file.type,
+          contentBase64: await fileToBase64(file)
+        }))
+      );
+      await sendJson("/api/cv/import-files", "POST", {
+        label: label.trim(),
+        files
+      });
+      setStatus(`Imported ${files.length} files from folder`);
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : "Folder import failed");
+    }
+  };
+
   return (
     <>
-      <PageHeader title="Base CV Import" description="Paste the source CV as structured JSON or plain text." />
+      <PageHeader title="Base CV Import" description="Paste the source CV or import a local folder containing your resume files." />
       <form className="panel import-panel" onSubmit={(event) => void importCv(event)}>
         <Field label="Version Label">
           <input onChange={(event) => setLabel(event.target.value)} type="text" value={label} />
@@ -620,6 +622,21 @@ function BaseCvImport() {
           spellCheck={false}
           value={content}
         />
+        <div className="folder-import">
+          <div>
+            <strong>Folder import</strong>
+            <p>Choose a folder that contains your CV or resume files. PDF, DOCX, JSON, TXT, and MD files are supported.</p>
+          </div>
+          <input
+            multiple
+            onChange={(event) => setFolderFiles(Array.from(event.target.files ?? []))}
+            type="file"
+            webkitdirectory="true"
+          />
+          <button className="button" onClick={() => void importFolder()} type="button" disabled={!folderFiles.length}>
+            Import Folder
+          </button>
+        </div>
         <div className="form-footer">
           <span>{status}</span>
           <IconButton icon={FileUp} label="Import Base CV" primary submit disabled={!content.trim() || !label.trim()} />
@@ -739,6 +756,41 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
   );
 }
 
+function ModelSelect({
+  filter,
+  models,
+  purpose,
+  value,
+  onChange
+}: {
+  filter: string;
+  models: OpenRouterModel[];
+  purpose: "search" | "tailor" | "apply" | "general";
+  value: string;
+  onChange: (value: string) => void;
+}) {
+  const filtered = models
+    .filter((model) => matchesPurpose(model, purpose))
+    .filter((model) => {
+      const query = filter.trim().toLowerCase();
+      if (!query) return true;
+      return [model.id, model.name, model.category].some((value) => value.toLowerCase().includes(query));
+    })
+    .sort((left, right) => compareModels(left, right, purpose));
+
+  const options = filtered.length ? filtered : models;
+
+  return (
+    <select onChange={(event) => onChange(event.target.value)} value={value || chooseModel(options, purpose)?.id || ""}>
+      {options.map((model) => (
+        <option key={model.id} value={model.id}>
+          {modelLabel(model)}
+        </option>
+      ))}
+    </select>
+  );
+}
+
 function IconButton({
   icon: Icon,
   label,
@@ -804,7 +856,55 @@ function titleCase(value: string) {
 
 function modelLabel(model: OpenRouterModel) {
   const context = model.contextLength ? ` - ${Math.round(model.contextLength / 1000)}k ctx` : "";
-  return `${model.name} (${model.id})${context}`;
+  const price = model.promptPrice ? ` - ${model.promptPrice} prompt` : "";
+  return `${model.name} (${model.id})${context}${price}`;
+}
+
+function chooseModel(models: OpenRouterModel[], purpose: "search" | "tailor" | "apply" | "general") {
+  const filtered = models.filter((model) => matchesPurpose(model, purpose));
+  const ranked = filtered.length ? filtered : models;
+  return ranked.slice().sort((left, right) => compareModels(left, right, purpose))[0];
+}
+
+function matchesPurpose(model: OpenRouterModel, purpose: "search" | "tailor" | "apply" | "general") {
+  if (purpose === "search") {
+    return model.category === "search" || model.category === "general";
+  }
+  if (purpose === "tailor" || purpose === "apply") {
+    return model.category === "tailor" || model.category === "apply" || /claude/i.test(model.id);
+  }
+  return true;
+}
+
+function compareModels(left: OpenRouterModel, right: OpenRouterModel, purpose: "search" | "tailor" | "apply" | "general") {
+  if (purpose === "search") {
+    return scoreSearch(left) - scoreSearch(right);
+  }
+  return scoreTailor(left) - scoreTailor(right);
+}
+
+function scoreSearch(model: OpenRouterModel) {
+  const prompt = Number(model.promptPrice ?? "1");
+  const completion = Number(model.completionPrice ?? "1");
+  const fastBonus = /grok|fast|flash|mini|nano|haiku|lite/i.test(model.id) ? -1 : 0;
+  return (Number.isFinite(prompt) ? prompt : 1) + (Number.isFinite(completion) ? completion : 1) + fastBonus;
+}
+
+function scoreTailor(model: OpenRouterModel) {
+  const lower = model.id.toLowerCase();
+  if (lower === "anthropic/claude-sonnet-4.5") return -10;
+  if (lower.includes("claude") && lower.includes("sonnet")) return -8;
+  if (lower.includes("claude")) return -6;
+  if (lower.includes("gpt-5.5") || lower.includes("gpt-5")) return -4;
+  if (lower.includes("gemini")) return -2;
+  return 0;
+}
+
+async function fileToBase64(file: File) {
+  const bytes = new Uint8Array(await file.arrayBuffer());
+  let binary = "";
+  for (const byte of bytes) binary += String.fromCharCode(byte);
+  return btoa(binary);
 }
 
 createRoot(document.getElementById("root")!).render(

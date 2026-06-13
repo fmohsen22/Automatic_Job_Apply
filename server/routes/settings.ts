@@ -8,20 +8,17 @@ import { readSettings } from "../services/settings.js";
 const router = Router();
 
 const SettingsSchema = z.object({
-  openaiApiKey: z.string().optional(),
   openrouterApiKey: z.string().optional(),
   tavilyApiKey: z.string().optional(),
   defaultCity: z.string().optional(),
   defaultAutonomyLevel: z.enum(["L0", "L1", "L2"]).default("L1"),
-  defaultModel: z.string().optional(),
-  searchProvider: z.enum(["openai", "openrouter"]).default("openai"),
   searchModel: z.string().optional(),
-  tailorProvider: z.enum(["openai", "openrouter"]).default("openrouter"),
-  tailorModel: z.string().optional()
+  tailorModel: z.string().optional(),
+  applyModel: z.string().optional(),
+  generalModel: z.string().optional()
 });
 
 const domains = {
-  openaiApiKey: "api.openai.com",
   openrouterApiKey: "openrouter.ai",
   tavilyApiKey: "api.tavily.com"
 };
@@ -31,7 +28,6 @@ router.get("/", async (_req, res) => {
   const hasCredential = (domain: string) => credentials.some((item: { domain: string }) => item.domain === domain);
   res.json({
     ...settings,
-    openaiApiKeySet: hasCredential(domains.openaiApiKey) || Boolean(process.env.OPENAI_API_KEY),
     openrouterApiKeySet: hasCredential(domains.openrouterApiKey) || Boolean(process.env.OPENROUTER_API_KEY),
     tavilyApiKeySet: hasCredential(domains.tavilyApiKey) || Boolean(process.env.TAVILY_API_KEY)
   });
@@ -40,7 +36,6 @@ router.get("/", async (_req, res) => {
 router.put("/", async (req, res) => {
   const parsed = SettingsSchema.parse(req.body);
   const writes = [
-    ["openaiApiKey", domains.openaiApiKey],
     ["openrouterApiKey", domains.openrouterApiKey],
     ["tavilyApiKey", domains.tavilyApiKey]
   ] as const;
@@ -59,11 +54,10 @@ router.put("/", async (req, res) => {
   const appSettings = {
     defaultCity: parsed.defaultCity || "",
     defaultAutonomyLevel: parsed.defaultAutonomyLevel,
-    defaultModel: parsed.defaultModel || "gpt-5.5",
-    searchProvider: parsed.searchProvider,
-    searchModel: parsed.searchModel || parsed.defaultModel || "gpt-5.5",
-    tailorProvider: parsed.tailorProvider,
-    tailorModel: parsed.tailorModel || "anthropic/claude-sonnet-4.5"
+    searchModel: parsed.searchModel || "",
+    tailorModel: parsed.tailorModel || "anthropic/claude-sonnet-4.5",
+    applyModel: parsed.applyModel || parsed.tailorModel || "anthropic/claude-sonnet-4.5",
+    generalModel: parsed.generalModel || parsed.tailorModel || "anthropic/claude-sonnet-4.5"
   };
 
   await prisma.$transaction(
@@ -80,7 +74,6 @@ router.put("/", async (req, res) => {
     entity: "settings",
     metadata: {
       ...appSettings,
-      openaiApiKeySet: Boolean(parsed.openaiApiKey),
       openrouterApiKeySet: Boolean(parsed.openrouterApiKey),
       tavilyApiKeySet: Boolean(parsed.tavilyApiKey)
     }

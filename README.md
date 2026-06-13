@@ -1,6 +1,6 @@
 # Automate JobApply
 
-Local AI job-search and assisted-apply workspace. The app is designed to run on your own Mac or Windows computer, with local SQLite storage, encrypted settings, base CV import/versioning, Tavily job search, model-ranked job lists, safety defaults, and audit log.
+Local AI job-search and assisted-apply workspace. The app is designed to run on your own Mac or Windows computer, with local SQLite storage, encrypted settings, base CV import/versioning, Tavily job search, OpenRouter model routing, safety defaults, and audit log.
 
 ## One-Click Local Run
 
@@ -17,7 +17,7 @@ Windows:
 1. Double-click `run-windows.bat`.
 2. The script creates `.env`, installs packages, syncs SQLite, starts the local server, and opens the app.
 
-The UI opens at `http://127.0.0.1:5173`. The API runs at `http://127.0.0.1:4100`.
+The UI opens at `http://127.0.0.1:4173`. The API runs at `http://127.0.0.1:4100`.
 
 ## Manual Run
 
@@ -34,32 +34,29 @@ You can also run `npm run local`, which performs the same bootstrap used by the 
 
 Open Settings and enter:
 
-- OpenAI API key: used for ChatGPT/OpenAI models.
-- OpenRouter API key: used for Claude and other third-party models through OpenRouter.
+- OpenRouter API key: used for Claude, Gemini, Grok, DeepSeek, and other models through OpenRouter.
 - Tavily API key: used for job/web search in M2.
-- Search Provider: recommended `OpenAI / ChatGPT`.
-- Search Model: recommended `gpt-5.5` for now.
-- CV Tailoring Provider: recommended `OpenRouter`.
-- CV Tailoring Model: recommended `anthropic/claude-sonnet-4.5` for now.
+- Search Model: recommended a fast/cheap model such as Grok Fast or Gemini Flash Lite.
+- Tailor Model: recommended `anthropic/claude-sonnet-4.5`.
+- Apply Model: recommended `anthropic/claude-sonnet-4.5`.
+- General Model: recommended `anthropic/claude-sonnet-4.5`.
 
-After saving an OpenRouter key, Settings loads recommended OpenRouter models into dropdowns. Claude Sonnet remains the default for CV tailoring, but you can choose another available model.
+After saving an OpenRouter key, Settings loads the live OpenRouter model list into purpose-specific dropdowns. The app auto-suggests a fast model for search and Claude Sonnet for tailoring and apply tasks.
 
 Keys are stored encrypted on the local computer and are not returned to the browser after saving.
 
 ## Environment
 
-- `OPENAI_API_KEY`: default LLM provider key for later milestones.
 - `OPENROUTER_API_KEY`: OpenRouter key for Claude and other model providers.
 - `TAVILY_API_KEY`: job/web search provider key for M2.
 - `GOOGLE_OAUTH_*`: optional email assist for M6.
 - `ENCRYPTION_KEY`: used to encrypt stored credentials at rest.
 - `DEFAULT_AUTONOMY_LEVEL`: `L0`, `L1`, or `L2`; default is `L1`.
 - `DEFAULT_CITY`: optional default city for job profiles.
-- `DEFAULT_MODEL`: configurable OpenAI model name.
-- `SEARCH_LLM_PROVIDER`: `openai` or `openrouter`.
 - `SEARCH_MODEL`: model used for job fit ranking.
-- `TAILOR_LLM_PROVIDER`: `openai` or `openrouter`.
 - `TAILOR_MODEL`: model used for CV and cover-letter tailoring.
+- `APPLY_MODEL`: model used for application assistance.
+- `GENERAL_MODEL`: model used for shared assistant tasks.
 
 Real `.env` files are ignored by git.
 
@@ -72,7 +69,7 @@ The M2 flow:
 1. Calls Tavily search with the saved Tavily API key.
 2. Normalizes and dedupes results into local SQLite.
 3. Reads the latest CV version.
-4. Ranks each job with the configured search model.
+4. Ranks each job with the configured OpenRouter search model.
 5. Falls back to Tavily relevance if LLM ranking is unavailable.
 6. Shows jobs sorted by fit score with reasons and posting links.
 
@@ -107,7 +104,7 @@ Secrets are encrypted at rest, never returned to the browser after saving, and n
 2. Add API keys and choose model routing in Settings.
 3. Import or paste the base CV into the CV Store.
 4. Search for jobs by role, city, and filters.
-5. Normalize and dedupe jobs from Tavily and job-board providers.
+5. Normalize and dedupe jobs from Tavily and future job-board providers.
 6. Rank jobs against the latest CV with the configured search model.
 7. Pick a job from the ranked list.
 8. Generate a tailored CV, cover letter, and requirements checklist with the configured tailoring model.

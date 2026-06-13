@@ -1,8 +1,25 @@
 # Automate JobApply
 
-Local AI job-search and assisted-apply workspace. M1 is a runnable foundation: React dashboard, Express API, SQLite via Prisma, encrypted settings storage, base CV import/versioning, safety defaults, and audit log.
+Local AI job-search and assisted-apply workspace. The app is designed to run on your own Mac or Windows computer, with local SQLite storage, encrypted settings, base CV import/versioning, safety defaults, and audit log.
 
-## Run M1
+## One-Click Local Run
+
+Prerequisite: install Node.js 20 LTS or newer from `https://nodejs.org`.
+
+macOS:
+
+1. Double-click `run-mac.command`.
+2. If macOS blocks it the first time, right-click the file, choose Open, then approve.
+3. The script creates `.env`, installs packages, syncs SQLite, starts the local server, and opens the app.
+
+Windows:
+
+1. Double-click `run-windows.bat`.
+2. The script creates `.env`, installs packages, syncs SQLite, starts the local server, and opens the app.
+
+The UI opens at `http://127.0.0.1:5173`. The API runs at `http://127.0.0.1:4100`.
+
+## Manual Run
 
 ```bash
 cp .env.example .env
@@ -11,19 +28,36 @@ npm run prisma:push
 npm run dev
 ```
 
-Open `http://127.0.0.1:5173`.
+You can also run `npm run local`, which performs the same bootstrap used by the click launchers.
 
-The API runs at `http://127.0.0.1:4100`; Vite proxies `/api` to it.
+## First Setup In The UI
+
+Open Settings and enter:
+
+- OpenAI API key: used for ChatGPT/OpenAI models.
+- OpenRouter API key: used for Claude and other third-party models through OpenRouter.
+- Tavily API key: used for job/web search in M2.
+- Search Provider: recommended `OpenAI / ChatGPT`.
+- Search Model: recommended `gpt-5.5` for now.
+- CV Tailoring Provider: recommended `OpenRouter`.
+- CV Tailoring Model: recommended `anthropic/claude-sonnet-4.5` for now.
+
+Keys are stored encrypted on the local computer and are not returned to the browser after saving.
 
 ## Environment
 
 - `OPENAI_API_KEY`: default LLM provider key for later milestones.
+- `OPENROUTER_API_KEY`: OpenRouter key for Claude and other model providers.
 - `TAVILY_API_KEY`: job/web search provider key for M2.
 - `GOOGLE_OAUTH_*`: optional email assist for M6.
 - `ENCRYPTION_KEY`: used to encrypt stored credentials at rest.
 - `DEFAULT_AUTONOMY_LEVEL`: `L0`, `L1`, or `L2`; default is `L1`.
 - `DEFAULT_CITY`: optional default city for job profiles.
 - `DEFAULT_MODEL`: configurable OpenAI model name.
+- `SEARCH_LLM_PROVIDER`: `openai` or `openrouter`.
+- `SEARCH_MODEL`: model used for job fit ranking.
+- `TAILOR_LLM_PROVIDER`: `openai` or `openrouter`.
+- `TAILOR_MODEL`: model used for CV and cover-letter tailoring.
 
 Real `.env` files are ignored by git.
 
@@ -49,3 +83,19 @@ Secrets are encrypted at rest, never returned to the browser after saving, and n
 - M4: Playwright apply worker, ATS adapters, screenshots, dry-run.
 - M5: `ui-test-pilot` dashboard scenarios from `../ui-test-pilot` via file dependency.
 - M6: Optional Gmail read-only and draft-reply flow.
+
+## Full Process Roadmap
+
+1. Start the app locally with the Mac or Windows launcher.
+2. Add API keys and choose model routing in Settings.
+3. Import or paste the base CV into the CV Store.
+4. Search for jobs by role, city, and filters.
+5. Normalize and dedupe jobs from Tavily and job-board providers.
+6. Rank jobs against the latest CV with the configured search model.
+7. Pick a job from the ranked list.
+8. Generate a tailored CV, cover letter, and requirements checklist with the configured tailoring model.
+9. Review differences, edit documents, request re-tailoring, or approve.
+10. After approval, run the apply worker in L0/L1/L2 autonomy mode.
+11. Pause before account creation, final submit, CAPTCHA, or risky domains by default.
+12. Store application status, screenshots, and audit events locally.
+13. Optionally connect email assist later for read-only summaries and draft replies.

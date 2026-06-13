@@ -311,6 +311,26 @@ nav {
   grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
+.form-section {
+  border-top: 1px solid #d9e2ec;
+  grid-column: 1 / -1;
+  padding-top: 16px;
+}
+
+.form-section:first-child {
+  border-top: 0;
+  padding-top: 0;
+}
+
+.form-section h2,
+.form-section p {
+  margin: 0;
+}
+
+.form-section h2 {
+  margin-bottom: 6px;
+}
+
 .field {
   display: grid;
   gap: 8px;

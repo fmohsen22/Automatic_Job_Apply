@@ -8,25 +8,46 @@ const router = Router();
 
 const SettingsSchema = z.object({
   openaiApiKey: z.string().optional(),
+  openrouterApiKey: z.string().optional(),
   tavilyApiKey: z.string().optional(),
   defaultCity: z.string().optional(),
   defaultAutonomyLevel: z.enum(["L0", "L1", "L2"]).default("L1"),
-  defaultModel: z.string().optional()
+  defaultModel: z.string().optional(),
+  searchProvider: z.enum(["openai", "openrouter"]).default("openai"),
+  searchModel: z.string().optional(),
+  tailorProvider: z.enum(["openai", "openrouter"]).default("openrouter"),
+  tailorModel: z.string().optional()
 });
 
 const domains = {
   openaiApiKey: "api.openai.com",
+  openrouterApiKey: "openrouter.ai",
   tavilyApiKey: "api.tavily.com"
 };
 
+const settingDefaults = {
+  defaultCity: process.env.DEFAULT_CITY || "",
+  defaultAutonomyLevel: process.env.DEFAULT_AUTONOMY_LEVEL || "L1",
+  defaultModel: process.env.DEFAULT_MODEL || "gpt-5.5",
+  searchProvider: process.env.SEARCH_LLM_PROVIDER || "openai",
+  searchModel: process.env.SEARCH_MODEL || process.env.DEFAULT_MODEL || "gpt-5.5",
+  tailorProvider: process.env.TAILOR_LLM_PROVIDER || "openrouter",
+  tailorModel: process.env.TAILOR_MODEL || "anthropic/claude-sonnet-4.5"
+};
+
+async function readSettings() {
+  const rows = await prisma.appSetting.findMany();
+  const values = Object.fromEntries(rows.map((row) => [row.key, row.value]));
+  return { ...settingDefaults, ...values };
+}
+
 router.get("/", async (_req, res) => {
-  const credentials = await prisma.credential.findMany();
+  const [credentials, settings] = await Promise.all([prisma.credential.findMany(), readSettings()]);
   const hasCredential = (domain: string) => credentials.some((item: { domain: string }) => item.domain === domain);
   res.json({
-    defaultCity: process.env.DEFAULT_CITY || "",
-    defaultAutonomyLevel: process.env.DEFAULT_AUTONOMY_LEVEL || "L1",
-    defaultModel: process.env.DEFAULT_MODEL || "gpt-4.1",
+    ...settings,
     openaiApiKeySet: hasCredential(domains.openaiApiKey) || Boolean(process.env.OPENAI_API_KEY),
+    openrouterApiKeySet: hasCredential(domains.openrouterApiKey) || Boolean(process.env.OPENROUTER_API_KEY),
     tavilyApiKeySet: hasCredential(domains.tavilyApiKey) || Boolean(process.env.TAVILY_API_KEY)
   });
 });
@@ -35,6 +56,7 @@ router.put("/", async (req, res) => {
   const parsed = SettingsSchema.parse(req.body);
   const writes = [
     ["openaiApiKey", domains.openaiApiKey],
+    ["openrouterApiKey", domains.openrouterApiKey],
     ["tavilyApiKey", domains.tavilyApiKey]
   ] as const;
 
@@ -49,13 +71,32 @@ router.put("/", async (req, res) => {
     }
   }
 
+  const appSettings = {
+    defaultCity: parsed.defaultCity || "",
+    defaultAutonomyLevel: parsed.defaultAutonomyLevel,
+    defaultModel: parsed.defaultModel || "gpt-5.5",
+    searchProvider: parsed.searchProvider,
+    searchModel: parsed.searchModel || parsed.defaultModel || "gpt-5.5",
+    tailorProvider: parsed.tailorProvider,
+    tailorModel: parsed.tailorModel || "anthropic/claude-sonnet-4.5"
+  };
+
+  await prisma.$transaction(
+    Object.entries(appSettings).map(([key, value]) =>
+      prisma.appSetting.upsert({
+        where: { key },
+        update: { value },
+        create: { key, value }
+      })
+    )
+  );
+
   await audit("settings.updated", "Settings updated", {
     entity: "settings",
     metadata: {
-      defaultCity: parsed.defaultCity,
-      defaultAutonomyLevel: parsed.defaultAutonomyLevel,
-      defaultModel: parsed.defaultModel,
+      ...appSettings,
       openaiApiKeySet: Boolean(parsed.openaiApiKey),
+      openrouterApiKeySet: Boolean(parsed.openrouterApiKey),
       tavilyApiKeySet: Boolean(parsed.tavilyApiKey)
     }
   });

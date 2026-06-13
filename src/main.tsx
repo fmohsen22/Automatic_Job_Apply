@@ -15,6 +15,7 @@ import "./styles.css";
 
 type View = "dashboard" | "settings" | "base-cv" | "versions" | "audit";
 type AutonomyLevel = "L0" | "L1" | "L2";
+type LlmProviderId = "openai" | "openrouter";
 type ApiState<T> = { data: T; loading: boolean; error: string | null };
 
 type DashboardSummary = {
@@ -35,11 +36,17 @@ type DashboardSummary = {
 
 type SettingsPayload = {
   openaiApiKey?: string;
+  openrouterApiKey?: string;
   tavilyApiKey?: string;
   defaultCity?: string;
   defaultAutonomyLevel?: AutonomyLevel;
   defaultModel?: string;
+  searchProvider?: LlmProviderId;
+  searchModel?: string;
+  tailorProvider?: LlmProviderId;
+  tailorModel?: string;
   openaiApiKeySet?: boolean;
+  openrouterApiKeySet?: boolean;
   tavilyApiKeySet?: boolean;
 };
 
@@ -83,10 +90,15 @@ const emptySummary: DashboardSummary = {
 
 const emptySettings: SettingsPayload = {
   openaiApiKey: "",
+  openrouterApiKey: "",
   tavilyApiKey: "",
   defaultCity: "",
   defaultAutonomyLevel: "L1",
-  defaultModel: "gpt-4.1"
+  defaultModel: "gpt-5.5",
+  searchProvider: "openai",
+  searchModel: "gpt-5.5",
+  tailorProvider: "openrouter",
+  tailorModel: "anthropic/claude-sonnet-4.5"
 };
 
 const fallbackAudit: AuditEvent[] = [
@@ -286,6 +298,7 @@ function SettingsPage() {
       ...emptySettings,
       ...data,
       openaiApiKey: "",
+      openrouterApiKey: "",
       tavilyApiKey: ""
     });
   }, [data]);
@@ -304,8 +317,12 @@ function SettingsPage() {
 
   return (
     <>
-      <PageHeader title="Settings" description="Configure API credentials, autonomy level, model, and search defaults." />
+      <PageHeader title="Settings" description="Configure local API keys, model routing, autonomy level, and search defaults." />
       <form className="panel form-grid" onSubmit={(event) => void saveSettings(event)}>
+        <div className="form-section">
+          <h2>API Keys</h2>
+          <p>Keys are stored encrypted on this computer and are not returned to the browser after saving.</p>
+        </div>
         <Field label={`OpenAI API Key${data.openaiApiKeySet ? " - saved" : ""}`}>
           <input
             autoComplete="off"
@@ -313,6 +330,15 @@ function SettingsPage() {
             placeholder="Leave blank to keep current key"
             type="password"
             value={form.openaiApiKey ?? ""}
+          />
+        </Field>
+        <Field label={`OpenRouter API Key${data.openrouterApiKeySet ? " - saved" : ""}`}>
+          <input
+            autoComplete="off"
+            onChange={(event) => setForm({ ...form, openrouterApiKey: event.target.value })}
+            placeholder="Leave blank to keep current key"
+            type="password"
+            value={form.openrouterApiKey ?? ""}
           />
         </Field>
         <Field label={`Tavily API Key${data.tavilyApiKeySet ? " - saved" : ""}`}>
@@ -324,6 +350,48 @@ function SettingsPage() {
             value={form.tavilyApiKey ?? ""}
           />
         </Field>
+        <div className="form-section">
+          <h2>Model Routing</h2>
+          <p>Recommended: ChatGPT/OpenAI for job search ranking, Claude via OpenRouter for CV tailoring.</p>
+        </div>
+        <Field label="Search Provider">
+          <select
+            onChange={(event) => setForm({ ...form, searchProvider: event.target.value as LlmProviderId })}
+            value={form.searchProvider ?? "openai"}
+          >
+            <option value="openai">OpenAI / ChatGPT</option>
+            <option value="openrouter">OpenRouter</option>
+          </select>
+        </Field>
+        <Field label="Search Model">
+          <input
+            onChange={(event) => setForm({ ...form, searchModel: event.target.value })}
+            placeholder="gpt-5.5"
+            type="text"
+            value={form.searchModel ?? ""}
+          />
+        </Field>
+        <Field label="CV Tailoring Provider">
+          <select
+            onChange={(event) => setForm({ ...form, tailorProvider: event.target.value as LlmProviderId })}
+            value={form.tailorProvider ?? "openrouter"}
+          >
+            <option value="openrouter">OpenRouter</option>
+            <option value="openai">OpenAI / ChatGPT</option>
+          </select>
+        </Field>
+        <Field label="CV Tailoring Model">
+          <input
+            onChange={(event) => setForm({ ...form, tailorModel: event.target.value })}
+            placeholder="anthropic/claude-sonnet-4.5"
+            type="text"
+            value={form.tailorModel ?? ""}
+          />
+        </Field>
+        <div className="form-section">
+          <h2>Local Defaults</h2>
+          <p>These control the default city and approval behavior for future search and apply runs.</p>
+        </div>
         <Field label="Autonomy">
           <select
             onChange={(event) =>
@@ -344,10 +412,10 @@ function SettingsPage() {
             value={form.defaultCity ?? ""}
           />
         </Field>
-        <Field label="Default Model">
+        <Field label="Fallback Model">
           <input
             onChange={(event) => setForm({ ...form, defaultModel: event.target.value })}
-            placeholder="gpt-4.1"
+            placeholder="gpt-5.5"
             type="text"
             value={form.defaultModel ?? ""}
           />

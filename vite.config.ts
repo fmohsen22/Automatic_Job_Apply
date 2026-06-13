@@ -9,6 +9,11 @@ export default defineConfig({
       "/api": "http://127.0.0.1:4100"
     }
   },
+  optimizeDeps: {
+    esbuildOptions: {
+      target: "esnext"
+    }
+  },
   build: {
     target: "esnext",
     outDir: "dist/web"

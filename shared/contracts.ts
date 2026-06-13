@@ -1,4 +1,6 @@
 export type AutonomyLevel = "L0" | "L1" | "L2";
+export type LlmProviderId = "openai" | "openrouter";
+export type LlmTask = "searchRanking" | "cvTailoring" | "coverLetter" | "gapChecklist";
 
 export const autonomyLabels: Record<AutonomyLevel, string> = {
   L0: "Assist",
@@ -7,12 +9,20 @@ export const autonomyLabels: Record<AutonomyLevel, string> = {
 };
 
 export interface LlmProvider {
+  id: LlmProviderId;
   rankJob(input: { cv: unknown; jobDescription: string }): Promise<{ score: number; reasons: string[] }>;
   tailorDocuments(input: { cv: unknown; jobDescription: string }): Promise<{
     cv: unknown;
     coverLetter: string;
     checklist: RequirementsChecklistItem[];
   }>;
+}
+
+export interface LlmRoutingSettings {
+  searchProvider: LlmProviderId;
+  searchModel: string;
+  tailorProvider: LlmProviderId;
+  tailorModel: string;
 }
 
 export interface SearchProvider {

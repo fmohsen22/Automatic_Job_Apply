@@ -10,6 +10,7 @@ export interface LlmRequest {
   model: string;
   messages: LlmMessage[];
   responseFormat?: "text" | "json";
+  maxTokens?: number;
 }
 
 async function getApiKey() {
@@ -38,6 +39,7 @@ export async function runLlm(request: LlmRequest) {
   const response = await client.chat.completions.create({
     model: request.model,
     messages: request.messages,
+    max_tokens: request.maxTokens,
     response_format: request.responseFormat === "json" ? { type: "json_object" } : undefined
   });
 

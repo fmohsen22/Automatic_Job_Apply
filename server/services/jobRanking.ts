@@ -1,4 +1,5 @@
 import { runLlm } from "./llm.js";
+import { extractLooseJson } from "../utils/llmJson.js";
 
 export interface RankingInput {
   cv: unknown;
@@ -33,7 +34,10 @@ export async function rankJob(input: RankingInput) {
         }
       ]
     });
-    const parsed = JSON.parse(response) as { score?: number; reasons?: string[] };
+    const parsed = extractLooseJson<{ score?: number; reasons?: string[] }>(response);
+    if (!parsed) {
+      throw new Error("Ranking model did not return valid JSON.");
+    }
     return {
       score: clampScore(parsed.score ?? input.fallbackScore),
       reasons: Array.isArray(parsed.reasons) && parsed.reasons.length ? parsed.reasons : ["Ranked by model."]

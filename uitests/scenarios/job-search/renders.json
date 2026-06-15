@@ -1,0 +1,16 @@
+{
+  "schemaVersion": 1,
+  "id": "job-search-renders",
+  "title": "Job Search shows ranked jobs and search history",
+  "feature": "job-search",
+  "tags": ["search"],
+  "steps": [
+    { "description": "Open the app", "action": "goto", "value": "http://127.0.0.1:4173" },
+    { "description": "Go to Job Search", "action": "click", "target": [{ "strategy": "role", "value": "button", "name": "Job Search" }] },
+    { "description": "Job Search heading visible", "action": "expect", "target": [{ "strategy": "role", "value": "heading", "name": "Job Search" }], "expect": { "type": "visible" } },
+    { "description": "Search History panel present", "action": "expect", "target": [{ "strategy": "role", "value": "heading", "name": "Search History" }], "expect": { "type": "visible" } },
+    { "description": "Ranked Jobs panel present", "action": "expect", "target": [{ "strategy": "role", "value": "heading", "name": "Ranked Jobs" }], "expect": { "type": "visible" } },
+    { "description": "Search button present", "action": "expect", "target": [{ "strategy": "role", "value": "button", "name": "Search Jobs" }], "expect": { "type": "visible" } },
+    { "description": "At least one job card with Review & Prepare", "action": "expect", "target": [{ "strategy": "role", "value": "button", "name": "Review & Prepare" }], "expect": { "type": "visible" } }
+  ]
+}

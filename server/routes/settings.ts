@@ -3,6 +3,7 @@ import { z } from "zod";
 import { prisma } from "../db.js";
 import { encryptSecret } from "../utils/crypto.js";
 import { audit } from "../services/audit.js";
+import { getSecret } from "../services/secrets.js";
 import { readSettings } from "../services/settings.js";
 
 const router = Router();
@@ -29,7 +30,9 @@ router.get("/", async (_req, res) => {
   res.json({
     ...settings,
     openrouterApiKeySet: hasCredential(domains.openrouterApiKey) || Boolean(process.env.OPENROUTER_API_KEY),
-    tavilyApiKeySet: hasCredential(domains.tavilyApiKey) || Boolean(process.env.TAVILY_API_KEY)
+    openrouterApiKeyStored: hasCredential(domains.openrouterApiKey),
+    tavilyApiKeySet: hasCredential(domains.tavilyApiKey) || Boolean(process.env.TAVILY_API_KEY),
+    tavilyApiKeyStored: hasCredential(domains.tavilyApiKey)
   });
 });
 
@@ -41,7 +44,7 @@ router.put("/", async (req, res) => {
   ] as const;
 
   for (const [field, domain] of writes) {
-    const value = parsed[field];
+    const value = parsed[field]?.trim();
     if (value) {
       await prisma.credential.upsert({
         where: { domain },
@@ -80,6 +83,44 @@ router.put("/", async (req, res) => {
   });
 
   res.json({ ok: true });
+});
+
+router.post("/test-openrouter", async (_req, res) => {
+  const apiKey = await getSecret(domains.openrouterApiKey, process.env.OPENROUTER_API_KEY);
+  if (!apiKey) {
+    res.status(400).json({ error: "OpenRouter API key is not saved." });
+    return;
+  }
+
+  const response = await fetch("https://openrouter.ai/api/v1/credits", {
+    headers: {
+      Authorization: `Bearer ${apiKey}`,
+      "HTTP-Referer": "http://127.0.0.1:4173",
+      "X-Title": "Automate JobApply"
+    }
+  });
+  const text = await response.text();
+
+  if (!response.ok) {
+    let message = `${response.status} ${response.statusText}`;
+    try {
+      const payload = JSON.parse(text) as { error?: { message?: string }; message?: string };
+      message = payload.error?.message || payload.message || message;
+    } catch {
+      if (text) message = text.slice(0, 240);
+    }
+    res.status(400).json({ error: `OpenRouter rejected the saved key: ${message}` });
+    return;
+  }
+
+  let credits: unknown = null;
+  try {
+    credits = JSON.parse(text);
+  } catch {
+    credits = "available";
+  }
+
+  res.json({ ok: true, message: "OpenRouter key is valid.", credits });
 });
 
 export default router;

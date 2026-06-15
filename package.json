@@ -7,7 +7,7 @@
     "dev": "node scripts/dev.mjs",
     "local": "node scripts/bootstrap-local.mjs",
     "dev:web": "vite --host 127.0.0.1 --port 4173",
-    "dev:server": "node --import tsx server/index.ts",
+    "dev:server": "tsx watch server/index.ts",
     "build:server": "tsc -p tsconfig.server.json",
     "check:server": "tsc -p tsconfig.server.json --noEmit",
     "build": "npm run typecheck && npm run build:server && vite build",
@@ -17,7 +17,7 @@
     "prisma:migrate": "prisma migrate dev",
     "prisma:push": "prisma db push",
     "typecheck": "tsc --noEmit && tsc -p tsconfig.server.json --noEmit",
-    "uitests": "echo \"ui-test-pilot scenarios arrive in M5\""
+    "uitests": "node ../ui-test-pilot/dist/cli.js run-all uitests/scenarios --junit uitests/.uitp/junit.xml"
   },
   "dependencies": {
     "@prisma/client": "^5.22.0",
@@ -28,6 +28,8 @@
     "mammoth": "^1.12.0",
     "openai": "^6.42.0",
     "pdf-parse": "^1.1.1",
+    "pizzip": "^3.2.0",
+    "playwright": "^1.56.1",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "zod": "^3.24.1"

@@ -1,0 +1,14 @@
+{
+  "schemaVersion": 1,
+  "id": "dashboard-loads",
+  "title": "Dashboard loads and shows live metrics",
+  "feature": "dashboard",
+  "tags": ["smoke"],
+  "steps": [
+    { "description": "Open the app (defaults to Dashboard)", "action": "goto", "value": "http://127.0.0.1:4173" },
+    { "description": "Dashboard heading is visible", "action": "expect", "target": [{ "strategy": "role", "value": "heading", "name": "Dashboard" }], "expect": { "type": "visible" } },
+    { "description": "Backend status shows Online", "action": "expect", "target": [{ "strategy": "text", "value": "Online" }], "expect": { "type": "visible" } },
+    { "description": "Jobs Found metric card is present", "action": "expect", "target": [{ "strategy": "text", "value": "Jobs Found" }], "expect": { "type": "visible" } },
+    { "description": "CV Versions metric card is present", "action": "expect", "target": [{ "strategy": "text", "value": "CV Versions" }], "expect": { "type": "visible" } }
+  ]
+}

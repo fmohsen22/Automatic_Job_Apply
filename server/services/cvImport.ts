@@ -1,6 +1,6 @@
 import crypto from "node:crypto";
 import mammoth from "mammoth";
-import pdfParse from "pdf-parse";
+import pdfParse from "pdf-parse/lib/pdf-parse.js";
 
 export type ImportableFile = {
   name: string;

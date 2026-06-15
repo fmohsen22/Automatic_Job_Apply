@@ -1,0 +1,19 @@
+{
+  "schemaVersion": 1,
+  "id": "prepare-template-navy",
+  "title": "Generate a designed CV from the navy template gallery",
+  "feature": "prepare",
+  "tags": ["e2e", "template"],
+  "steps": [
+    { "description": "Open the app", "action": "goto", "value": "http://127.0.0.1:4173" },
+    { "description": "Go to Job Search", "action": "click", "target": [{ "strategy": "role", "value": "button", "name": "Job Search" }] },
+    { "description": "Open the first ranked job", "action": "click", "target": [{ "strategy": "role", "value": "button", "name": "Review & Prepare" }] },
+    { "description": "Generate panel is visible", "action": "expect", "target": [{ "strategy": "role", "value": "heading", "name": "Generate / Update CV" }], "expect": { "type": "visible" }, "timeoutMs": 15000 },
+    { "description": "Choose the Navy / Energy designed template", "action": "select", "target": [{ "strategy": "role", "value": "combobox", "name": "Output format" }, { "strategy": "css", "value": "select[aria-label='Output format']" }], "value": "Navy / Energy", "timeoutMs": 15000 },
+    { "description": "Generate the designed CV", "action": "click", "target": [{ "strategy": "role", "value": "button", "name": "Generate Materials" }, { "strategy": "role", "value": "button", "name": "Regenerate Materials" }] },
+    { "description": "Wait for tailoring to complete", "action": "waitFor", "waitFor": { "text": "tailored materials are ready", "state": "visible" }, "timeoutMs": 120000 },
+    { "description": "CV is rendered in a designed template", "action": "waitFor", "waitFor": { "text": "Designed", "state": "visible" }, "timeoutMs": 30000 },
+    { "description": "PDF download is available", "action": "expect", "target": [{ "strategy": "role", "value": "link", "name": "PDF" }], "expect": { "type": "visible" } },
+    { "description": "Requirements checklist was produced", "action": "expect", "target": [{ "strategy": "role", "value": "heading", "name": "Requirements Checklist" }], "expect": { "type": "visible" } }
+  ]
+}

@@ -1,0 +1,16 @@
+{
+  "schemaVersion": 1,
+  "id": "settings-config",
+  "title": "Settings shows API key status and model routing",
+  "feature": "settings",
+  "tags": ["smoke"],
+  "steps": [
+    { "description": "Open the app", "action": "goto", "value": "http://127.0.0.1:4173" },
+    { "description": "Go to Settings", "action": "click", "target": [{ "strategy": "role", "value": "button", "name": "Settings" }, { "strategy": "text", "value": "Settings", "exact": true }] },
+    { "description": "Settings heading visible", "action": "expect", "target": [{ "strategy": "role", "value": "heading", "name": "Settings" }], "expect": { "type": "visible" } },
+    { "description": "Model Routing section present", "action": "expect", "target": [{ "strategy": "role", "value": "heading", "name": "Model Routing" }], "expect": { "type": "visible" } },
+    { "description": "Tailor Model selector is present", "action": "expect", "target": [{ "strategy": "role", "value": "combobox", "name": "Tailor Model" }], "expect": { "type": "visible" } },
+    { "description": "OpenRouter key status is shown", "action": "expect", "target": [{ "strategy": "text", "value": "OpenRouter" }], "expect": { "type": "visible" } },
+    { "description": "Save API Keys button is present", "action": "expect", "target": [{ "strategy": "role", "value": "button", "name": "Save API Keys" }], "expect": { "type": "visible" } }
+  ]
+}

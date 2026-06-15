@@ -1,0 +1,51 @@
+import path from "node:path";
+import type { StructuredCv } from "./cvStructure.js";
+import { renderNavyTemplate } from "../templates/navy.js";
+
+export type PhotoSlot = { parts: string[]; size: number };
+
+export type CvTemplate =
+  | { id: string; name: string; description: string; kind: "html"; render: (cv: StructuredCv) => string }
+  | { id: string; name: string; description: string; kind: "docx"; file: string; photo?: PhotoSlot };
+
+const DOCX_DIR = path.resolve(process.cwd(), "server", "templates", "docx");
+
+export function docxTemplatePath(file: string) {
+  return path.join(DOCX_DIR, file);
+}
+
+// Built-in gallery. The navy template is HTML→PDF; the rest are real .docx
+// designs the candidate's tailored content is poured into (editable Word + PDF).
+export const cvTemplates: CvTemplate[] = [
+  {
+    id: "navy",
+    name: "Navy / Energy",
+    description: "Navy header, gold accents, stats band, two-column tech stack. Designed PDF.",
+    kind: "html",
+    render: renderNavyTemplate
+  },
+  { id: "ms-objective", name: "Simple Objective", description: "Clean header with objective, education, skills and experience. No photo.", kind: "docx", file: "ms-objective.docx" },
+  { id: "ms-classic", name: "Classic Header", description: "Centered name header with a profile and sectioned body. No photo.", kind: "docx", file: "ms-classic.docx" },
+  { id: "ms-professional", name: "Professional", description: "Professional resume with contact block and clear sections. No photo.", kind: "docx", file: "ms-professional.docx" },
+  { id: "ms-formal", name: "Formal", description: "Formal tabular layout with profile, education and experience. No photo.", kind: "docx", file: "ms-formal.docx" },
+  { id: "ats-clean", name: "ATS Clean", description: "Single-column, parser-friendly layout. Great for strict ATS. No photo.", kind: "docx", file: "ats-clean.docx" },
+  { id: "ats-modern", name: "ATS Modern", description: "Clean ATS-friendly layout with a modern accent. No photo.", kind: "docx", file: "ats-modern.docx" },
+  { id: "two-column", name: "Two-Column", description: "Sidebar with contact/skills and a main column for experience. No photo.", kind: "docx", file: "two-column.docx" },
+  { id: "infographic", name: "Modern Infographic", description: "Designed layout with icons and visual sections. No photo.", kind: "docx", file: "infographic.docx" },
+  { id: "photo-modern", name: "Photo — Modern", description: "Modern design with a profile photo. Upload a photo for best results.", kind: "docx", file: "photo-modern.docx", photo: { parts: ["word/media/image1.jpg", "word/media/image2.jpeg"], size: 300 } },
+  { id: "photo-profile", name: "Photo — Profile", description: "Profile-style design with a photo. Upload a photo for best results.", kind: "docx", file: "photo-profile.docx", photo: { parts: ["word/media/image1.jpg", "word/media/image2.jpeg"], size: 212 } }
+];
+
+export function getTemplate(id: string): CvTemplate | undefined {
+  return cvTemplates.find((template) => template.id === id);
+}
+
+export function listTemplates() {
+  return cvTemplates.map((t) => ({
+    id: t.id,
+    name: t.name,
+    description: t.description,
+    kind: t.kind,
+    needsPhoto: t.kind === "docx" && Boolean(t.photo)
+  }));
+}

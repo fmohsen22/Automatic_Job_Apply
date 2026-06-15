@@ -1,0 +1,37 @@
+{
+  "schemaVersion": 1,
+  "id": "prepare-exact-format-and-apply",
+  "title": "Upload Word CV, tailor it in exact format, download Word/PDF, run apply worker",
+  "feature": "prepare",
+  "tags": ["e2e"],
+  "steps": [
+    { "description": "Open the app", "action": "goto", "value": "http://127.0.0.1:4173" },
+
+    { "description": "Go to Base CV", "action": "click", "target": [{ "strategy": "role", "value": "button", "name": "Base CV" }] },
+    { "description": "Set version label", "action": "fill", "target": [{ "strategy": "role", "value": "textbox", "name": "Version Label" }, { "strategy": "css", "value": "form.import-panel input[type=text]" }], "value": "UITest Word CV" },
+    { "description": "Choose the Word CV file to upload", "action": "upload", "target": [{ "strategy": "css", "value": "form.import-panel input[type=file]" }], "value": "../../fixtures/sample_cv.docx" },
+    { "description": "Click Upload Files", "action": "click", "target": [{ "strategy": "role", "value": "button", "name": "Upload Files" }] },
+    { "description": "Word file is kept for exact-format tailoring", "action": "expect", "target": [{ "strategy": "text", "value": "Word file(s) kept for exact-format tailoring" }], "expect": { "type": "visible" }, "timeoutMs": 20000 },
+
+    { "description": "Go to CV Versions", "action": "click", "target": [{ "strategy": "role", "value": "button", "name": "CV Versions" }] },
+    { "description": "Select the uploaded Word CV", "action": "click", "target": [{ "strategy": "role", "value": "button", "name": "UITest Word CV" }, { "strategy": "text", "value": "UITest Word CV" }] },
+    { "description": "Set the Word CV as the active template", "action": "click", "target": [{ "strategy": "role", "value": "button", "name": "Use as Template" }] },
+    { "description": "Word CV is now the active template", "action": "waitFor", "waitFor": { "text": "This is your active template", "state": "visible" }, "timeoutMs": 15000 },
+
+    { "description": "Go to Job Search", "action": "click", "target": [{ "strategy": "role", "value": "button", "name": "Job Search" }] },
+    { "description": "Open the first ranked job", "action": "click", "target": [{ "strategy": "role", "value": "button", "name": "Review & Prepare" }] },
+    { "description": "Job detail generate panel is visible", "action": "expect", "target": [{ "strategy": "role", "value": "heading", "name": "Generate / Update CV" }], "expect": { "type": "visible" }, "timeoutMs": 15000 },
+
+    { "description": "Choose the exact-Word output format", "action": "select", "target": [{ "strategy": "role", "value": "combobox", "name": "Output format" }, { "strategy": "css", "value": "select[aria-label='Output format']" }], "value": "word", "timeoutMs": 15000 },
+    { "description": "Click Generate Materials (AI tailoring)", "action": "click", "target": [{ "strategy": "role", "value": "button", "name": "Generate Materials" }, { "strategy": "role", "value": "button", "name": "Regenerate Materials" }] },
+    { "description": "Wait for tailoring to complete", "action": "waitFor", "waitFor": { "text": "tailored materials are ready", "state": "visible" }, "timeoutMs": 120000 },
+    { "description": "Tailored CV is in exact Word format", "action": "waitFor", "waitFor": { "text": "Exact Word format", "state": "visible" }, "timeoutMs": 30000 },
+    { "description": "Word download link is available", "action": "expect", "target": [{ "strategy": "role", "value": "link", "name": "Word" }], "expect": { "type": "visible" } },
+    { "description": "PDF download link is available", "action": "expect", "target": [{ "strategy": "role", "value": "link", "name": "PDF" }], "expect": { "type": "visible" } },
+    { "description": "Requirements checklist was produced", "action": "expect", "target": [{ "strategy": "role", "value": "heading", "name": "Requirements Checklist" }], "expect": { "type": "visible" } },
+
+    { "description": "Run the apply worker (browser dry-run)", "action": "click", "target": [{ "strategy": "role", "value": "button", "name": "Run Browser Check" }] },
+    { "description": "Apply worker finishes and reports a status", "action": "waitFor", "waitFor": { "text": "Worker finished", "state": "visible" }, "timeoutMs": 120000 },
+    { "description": "Application Runs panel shows the run", "action": "expect", "target": [{ "strategy": "role", "value": "heading", "name": "Application Runs" }], "expect": { "type": "visible" } }
+  ]
+}

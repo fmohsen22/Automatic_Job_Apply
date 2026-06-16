@@ -1,5 +1,6 @@
-import { copyFile, access } from "node:fs/promises";
+import { readFile, writeFile, access } from "node:fs/promises";
 import { constants } from "node:fs";
+import { randomBytes } from "node:crypto";
 import { spawn } from "node:child_process";
 import process from "node:process";
 
@@ -37,8 +38,11 @@ function openBrowser(url) {
 }
 
 if (!(await exists(".env"))) {
-  await copyFile(".env.example", ".env");
-  console.log("Created .env from .env.example. Add API keys in the Settings UI after the app opens.");
+  const template = await readFile(".env.example", "utf8");
+  // Give each install a unique encryption key so saved API keys are encrypted at rest.
+  const env = template.replace(/^ENCRYPTION_KEY=.*$/m, `ENCRYPTION_KEY="${randomBytes(32).toString("hex")}"`);
+  await writeFile(".env", env);
+  console.log("Created .env with a generated encryption key. Add your API keys in the Settings UI after the app opens.");
 }
 
 if (!(await exists("node_modules"))) {

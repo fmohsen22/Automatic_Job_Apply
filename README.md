@@ -55,45 +55,74 @@ When you generate materials for a job you choose an **Output format / template**
   ```
   You can also set `LIBREOFFICE_PATH` in `.env` to point at a `soffice` binary.
 
-## Quick Start
+## Quick Start (step by step)
+
+The only thing you must install is **Node.js**. No Python, no Java, no database server.
+You also need two free API keys: **OpenRouter** (the AI) from <https://openrouter.ai/keys>, and **Tavily** (job search) from <https://app.tavily.com>.
 
 ### macOS
 
-Double-click:
+```bash
+# 1. Install Node.js + Git with Homebrew.
+#    (If you don't have Homebrew, install it first:)
+/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+brew install node git
 
-```text
-run-mac.command
+# 2. (Optional) LibreOffice — for one-click PDF of Word templates:
+brew install --cask libreoffice
+
+# 3. Get the app:
+git clone https://github.com/fmohsen22/Automatic_Job_Apply.git
+cd Automatic_Job_Apply
+
+# 4. Install dependencies and the browser used for apply + designed PDFs:
+npm install
+npx playwright install chromium
+
+# 5. Run it (creates the config + database and opens your browser):
+npm run local
 ```
 
-If macOS blocks it the first time, right-click the file, choose Open, then approve.
+### Windows (PowerShell)
 
-### Windows
+```powershell
+# 1. Install Node.js + Git with winget, then CLOSE and reopen the terminal so PATH updates.
+winget install OpenJS.NodeJS.LTS
+winget install Git.Git
 
-Double-click:
+# 2. (Optional) LibreOffice — for one-click PDF of Word templates:
+winget install TheDocumentFoundation.LibreOffice
 
-```text
-run-windows.bat
+# 3. Get the app:
+git clone https://github.com/fmohsen22/Automatic_Job_Apply.git
+cd Automatic_Job_Apply
+
+# 4. Install dependencies and the browser used for apply + designed PDFs:
+npm install
+npx playwright install chromium
+
+# 5. Run it (creates the config + database and opens your browser):
+npm run local
 ```
 
-### Manual Run
+> No Git? Download the repo as a ZIP from GitHub, unzip it, then `cd` into the folder and start at step 4.
+> Prefer double-clicking? After step 4, use `run-mac.command` (macOS) or `run-windows.bat` (Windows) instead of `npm run local`.
+
+### After it opens (http://127.0.0.1:4173)
+
+1. **Settings** → paste your **OpenRouter** and **Tavily** keys → Save.
+2. **Base CV** → upload your CV (upload a Word `.docx` for exact-format output; PDF also works). Optionally add a photo.
+3. **CV Versions** → mark your CV as the **Template**.
+4. **Job Search** → describe what you want in plain language and search — or use **Found a job yourself?** to paste a job link.
+5. Open a job → pick a template → **Generate Materials** → download Word / PDF.
+
+The first run downloads dependencies and a browser (a few minutes); later runs start in seconds. Stop the app with `Ctrl+C`. The web UI is at `http://127.0.0.1:4173` and the API at `http://127.0.0.1:4100`.
+
+### Restart later
 
 ```bash
-cp .env.example .env
-npm install
-npm run prisma:push
-npm run dev
-```
-
-The app opens at:
-
-```text
-http://127.0.0.1:4173
-```
-
-The API runs at:
-
-```text
-http://127.0.0.1:4100
+cd Automatic_Job_Apply
+npm run local
 ```
 
 ## First Setup

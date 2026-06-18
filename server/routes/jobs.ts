@@ -7,7 +7,7 @@ import { presentApplicationRun, runApplyWorker } from "../services/applyWorker.j
 import { prepareDocumentsForJob, presentDocSet } from "../services/documentPreparation.js";
 import { type AutonomyLevel, isGatedDomain } from "../services/domainPolicies.js";
 import { checkJobLive, mapLimit } from "../services/jobFreshness.js";
-import { companyFromHost, fetchJobPage } from "../services/jobImport.js";
+import { companyFromHost, extractJobFromImage, extractTextFromFile, fetchJobPage } from "../services/jobImport.js";
 import { rankJob } from "../services/jobRanking.js";
 import { extractSearchIntent } from "../services/searchIntent.js";
 import { readSettings } from "../services/settings.js";
@@ -49,7 +49,12 @@ const AddJobSchema = z.object({
   title: z.string().optional(),
   company: z.string().optional(),
   location: z.string().optional(),
-  description: z.string().optional()
+  description: z.string().optional(),
+  file: z.object({
+    name: z.string().min(1),
+    type: z.string().optional().default(""),
+    contentBase64: z.string().min(1)
+  }).optional()
 });
 
 // Add a job the user found themselves (by URL and/or pasted text), score the fit,
@@ -61,6 +66,11 @@ router.post("/", asyncRoute(async (req, res) => {
   let title = parsed.title?.trim() || "";
   let company = parsed.company?.trim() || "";
 
+  const [settings, latestCv] = await Promise.all([
+    readSettings(),
+    prisma.cvVersion.findFirst({ where: { NOT: { source: { startsWith: "tailored:" } } }, orderBy: { createdAt: "desc" } })
+  ]);
+
   // If we have a URL but are missing details, fetch and extract them.
   if (/^https?:\/\//i.test(url) && (!description || !title)) {
     const fetched = await fetchJobPage(url);
@@ -68,6 +78,24 @@ router.post("/", asyncRoute(async (req, res) => {
       title = title || fetched.title;
       company = company || fetched.company;
       description = description || fetched.description;
+    }
+  }
+
+  // Read an uploaded file: a screenshot via a vision model, or a PDF/Word/text as text.
+  if (parsed.file && (!description || !title)) {
+    const file = parsed.file;
+    const buffer = Buffer.from(file.contentBase64, "base64");
+    const isImage = /^image\//.test(file.type) || /\.(png|jpe?g|webp|gif|heic)$/i.test(file.name);
+    if (isImage) {
+      const fromImage = await extractJobFromImage(file.contentBase64, file.type || "image/png", settings.generalModel || "google/gemini-2.5-flash");
+      if (fromImage) {
+        title = title || fromImage.title;
+        company = company || fromImage.company;
+        description = description || fromImage.description;
+      }
+    } else {
+      const text = await extractTextFromFile(buffer, file.name, file.type || "");
+      if (text) description = description || text;
     }
   }
 
@@ -79,16 +107,12 @@ router.post("/", asyncRoute(async (req, res) => {
   }
 
   if (!description || description.length < 20) {
-    throw new Error("Couldn't read that page. Paste the job description (or check the URL) and try again.");
+    throw new Error("Couldn't read that. Paste the job description, or upload a clearer PDF/Word/screenshot.");
   }
 
   const finalUrl = /^https?:\/\//i.test(url) ? url : `manual:${randomUUID()}`;
   const location = parsed.location?.trim() || "Not specified";
 
-  const [settings, latestCv] = await Promise.all([
-    readSettings(),
-    prisma.cvVersion.findFirst({ where: { NOT: { source: { startsWith: "tailored:" } } }, orderBy: { createdAt: "desc" } })
-  ]);
   const cv = latestCv ? fromJsonString(latestCv.json, {}) : {};
   let ranking = { score: 65, reasons: ["Added manually."] };
   try {

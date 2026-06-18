@@ -337,6 +337,7 @@ function JobSearch({ onOpenJob }: { onOpenJob: (jobId: string) => void }) {
   const [addTitle, setAddTitle] = useState("");
   const [addCompany, setAddCompany] = useState("");
   const [addDescription, setAddDescription] = useState("");
+  const [addFile, setAddFile] = useState<File | null>(null);
   const [isAdding, setIsAdding] = useState(false);
   const [addStatus, setAddStatus] = useState("");
   const [hideGated, setHideGated] = useState(() => {
@@ -378,21 +379,26 @@ function JobSearch({ onOpenJob }: { onOpenJob: (jobId: string) => void }) {
 
   const addJob = async (event: React.FormEvent) => {
     event.preventDefault();
-    if (!addUrl.trim() && !addDescription.trim()) return;
+    if (!addUrl.trim() && !addDescription.trim() && !addFile) return;
     setIsAdding(true);
-    setAddStatus("Reading the job and scoring fit…");
+    setAddStatus(addFile ? "Reading the file and scoring fit…" : "Reading the job and scoring fit…");
     try {
-      const job = await sendJson<Job>("/api/jobs", "POST", {
+      const payload: Record<string, unknown> = {
         url: addUrl.trim(),
         title: addTitle.trim(),
         company: addCompany.trim(),
         description: addDescription.trim()
-      });
+      };
+      if (addFile) {
+        payload.file = { name: addFile.name, type: addFile.type, contentBase64: await fileToBase64(addFile) };
+      }
+      const job = await sendJson<Job>("/api/jobs", "POST", payload);
       setAddStatus(`Added “${job.title}” (${job.fitScore}% fit) — opening it…`);
       setAddUrl("");
       setAddTitle("");
       setAddCompany("");
       setAddDescription("");
+      setAddFile(null);
       setHistoryJobs(null);
       setActiveRunId("");
       await jobs.refresh();
@@ -515,16 +521,23 @@ function JobSearch({ onOpenJob }: { onOpenJob: (jobId: string) => void }) {
             value={addDescription}
           />
         </Field>
+        <Field label="Or upload the job description — PDF, Word, or a screenshot (great for login-only sites)">
+          <input
+            type="file"
+            accept=".pdf,.docx,.txt,.md,image/*"
+            onChange={(event) => setAddFile(event.target.files?.[0] ?? null)}
+          />
+        </Field>
         <div className="form-footer">
           <span className={isAdding ? "loading-status" : ""}>
-            {addStatus || "We read the link (or your pasted text), score the fit, add it to the list, and open it for preparation."}
+            {addStatus || "Paste a link, paste text, or upload a PDF/Word/screenshot — we read it, score the fit, and open it for preparation."}
           </span>
           <IconButton
             icon={Plus}
             label={isAdding ? "Adding…" : "Add & Open"}
             primary
             submit
-            disabled={isAdding || (!addUrl.trim() && addDescription.trim().length < 20)}
+            disabled={isAdding || (!addUrl.trim() && !addFile && addDescription.trim().length < 20)}
           />
         </div>
       </form>

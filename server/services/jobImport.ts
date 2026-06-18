@@ -1,4 +1,7 @@
 import pdfParse from "pdf-parse/lib/pdf-parse.js";
+import mammoth from "mammoth";
+import { createLlmClient } from "./llm.js";
+import { extractLooseJson } from "../utils/llmJson.js";
 
 // Fetch a job posting the user found and extract title / company / description so
 // they can tailor their CV to it. Handles HTML pages (incl. schema.org JobPosting
@@ -96,6 +99,64 @@ async function extractPdfText(buffer: Buffer): Promise<string> {
     return normalize(result.text || "");
   } catch {
     return "";
+  }
+}
+
+// Plain-text extraction from an uploaded job-description file (PDF / Word / text).
+export async function extractTextFromFile(buffer: Buffer, name: string, type: string): Promise<string> {
+  const lower = name.toLowerCase();
+  if (lower.endsWith(".pdf") || type.includes("pdf") || buffer.subarray(0, 5).toString("latin1") === "%PDF-") {
+    return extractPdfText(buffer);
+  }
+  if (lower.endsWith(".docx") || type.includes("wordprocessingml")) {
+    try {
+      const result = await mammoth.extractRawText({ buffer });
+      return normalize(result.value || "");
+    } catch {
+      return "";
+    }
+  }
+  if (/\.(txt|md|rtf)$/.test(lower) || type.startsWith("text/")) {
+    return normalize(buffer.toString("utf8"));
+  }
+  return "";
+}
+
+// Read a job posting from an image (screenshot) using a vision-capable model.
+export async function extractJobFromImage(imageBase64: string, mimeType: string, model: string): Promise<ExtractedJob | null> {
+  try {
+    const client = await createLlmClient();
+    const dataUrl = `data:${mimeType || "image/png"};base64,${imageBase64}`;
+    const response = await client.chat.completions.create({
+      model,
+      max_tokens: 1500,
+      messages: [
+        {
+          role: "system",
+          content:
+            'You read a job posting from an image (often a screenshot). Return ONLY a JSON object: {"title": string, "company": string, "description": string}. ' +
+            "description = all readable job text (role summary, responsibilities, requirements, etc.). Transcribe faithfully; omit anything unreadable."
+        },
+        {
+          role: "user",
+          content: [
+            { type: "text", text: "Extract the job title, company, and full description from this image." },
+            { type: "image_url", image_url: { url: dataUrl } }
+          ]
+        }
+      ]
+    } as Parameters<typeof client.chat.completions.create>[0]);
+
+    const text = (response as { choices?: Array<{ message?: { content?: string } }> }).choices?.[0]?.message?.content || "";
+    const parsed = extractLooseJson<{ title?: string; company?: string; description?: string }>(text);
+    if (!parsed || !parsed.description || String(parsed.description).trim().length < 20) return null;
+    return {
+      title: String(parsed.title || "").trim(),
+      company: String(parsed.company || "").trim(),
+      description: String(parsed.description).slice(0, 8000)
+    };
+  } catch {
+    return null;
   }
 }
 

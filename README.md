@@ -113,7 +113,7 @@ npm run local
 1. **Settings** → paste your **OpenRouter** and **Tavily** keys → Save.
 2. **Base CV** → upload your CV (upload a Word `.docx` for exact-format output; PDF also works). Optionally add a photo.
 3. **CV Versions** → mark your CV as the **Template**.
-4. **Job Search** → describe what you want in plain language and search — or use **Found a job yourself?** to paste a job link.
+4. **Job Search** → describe what you want in plain language and search — or use **Found a job yourself?** to add a job by **link, pasted text, or an uploaded PDF / Word doc / screenshot** (handy for login-only sites).
 5. Open a job → pick a template → **Generate Materials** → download Word / PDF.
 
 The first run downloads dependencies and a browser (a few minutes); later runs start in seconds. Stop the app with `Ctrl+C`. The web UI is at `http://127.0.0.1:4173` and the API at `http://127.0.0.1:4100`.

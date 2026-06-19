@@ -53,6 +53,7 @@ type SettingsPayload = {
   defaultAutonomyLevel?: AutonomyLevel;
   searchModel?: string;
   tailorModel?: string;
+  reviewModel?: string;
   applyModel?: string;
   generalModel?: string;
   openrouterApiKeySet?: boolean;
@@ -91,6 +92,8 @@ type OpenRouterModel = {
   completionPrice?: string;
   category: "search" | "tailor" | "apply" | "general";
 };
+
+type ModelPurpose = "search" | "tailor" | "review" | "apply" | "general";
 
 type Job = {
   id: string;
@@ -188,8 +191,9 @@ const emptySettings: SettingsPayload = {
   tavilyApiKey: "",
   defaultCity: "",
   defaultAutonomyLevel: "L1",
-  searchModel: "",
+  searchModel: "x-ai/grok-4.3",
   tailorModel: "anthropic/claude-sonnet-4.5",
+  reviewModel: "openai/gpt-5.4-mini",
   applyModel: "anthropic/claude-sonnet-4.5",
   generalModel: "anthropic/claude-sonnet-4.5"
 };
@@ -1100,6 +1104,7 @@ function SettingsPage() {
         const next: SettingsPayload = { ...current };
         if (!next.searchModel) next.searchModel = chooseModel(models.data, "search")?.id ?? next.searchModel;
         if (!next.tailorModel) next.tailorModel = chooseModel(models.data, "tailor")?.id ?? next.tailorModel;
+        if (!next.reviewModel) next.reviewModel = chooseModel(models.data, "review")?.id ?? next.reviewModel;
         if (!next.applyModel) next.applyModel = chooseModel(models.data, "apply")?.id ?? next.applyModel;
         if (!next.generalModel) next.generalModel = chooseModel(models.data, "general")?.id ?? next.generalModel;
         return next;
@@ -1205,13 +1210,22 @@ function SettingsPage() {
             onChange={(value) => setForm({ ...form, searchModel: value })}
           />
         </Field>
-        <Field label="Tailor Model">
+        <Field label="Tailor Model (generates / updates the CV)">
           <ModelSelect
             filter={modelQuery}
             models={openRouterModels}
             purpose="tailor"
             value={form.tailorModel ?? ""}
             onChange={(value) => setForm({ ...form, tailorModel: value })}
+          />
+        </Field>
+        <Field label="Review Model (critiques the draft → Tailor refines)">
+          <ModelSelect
+            filter={modelQuery}
+            models={openRouterModels}
+            purpose="review"
+            value={form.reviewModel ?? ""}
+            onChange={(value) => setForm({ ...form, reviewModel: value })}
           />
         </Field>
         <Field label="Apply Model">
@@ -1599,17 +1613,16 @@ function ModelSelect({
 }: {
   filter: string;
   models: OpenRouterModel[];
-  purpose: "search" | "tailor" | "apply" | "general";
+  purpose: ModelPurpose;
   value: string;
   onChange: (value: string) => void;
 }) {
-  const filtered = models
-    .filter((model) => matchesPurpose(model, purpose))
-    .filter((model) => {
-      const query = filter.trim().toLowerCase();
-      if (!query) return true;
-      return [model.id, model.name, model.category].some((value) => value.toLowerCase().includes(query));
-    })
+  const query = filter.trim().toLowerCase();
+  // When searching, look across ALL models (so you can pick any model for any
+  // role to test). With no query, show the models relevant to this role.
+  const base = query ? models : models.filter((model) => matchesPurpose(model, purpose));
+  const filtered = base
+    .filter((model) => !query || [model.id, model.name, model.category].some((field) => field.toLowerCase().includes(query)))
     .sort((left, right) => compareModels(left, right, purpose));
 
   const options = filtered.length ? filtered : models;
@@ -1715,15 +1728,16 @@ function modelLabel(model: OpenRouterModel) {
   return `OpenRouter: ${model.name} (${model.id})${context}`;
 }
 
-function chooseModel(models: OpenRouterModel[], purpose: "search" | "tailor" | "apply" | "general") {
+function chooseModel(models: OpenRouterModel[], purpose: ModelPurpose) {
   const filtered = models.filter((model) => matchesPurpose(model, purpose));
   const ranked = filtered.length ? filtered : models;
   return ranked.slice().sort((left, right) => compareModels(left, right, purpose))[0];
 }
 
-function matchesPurpose(model: OpenRouterModel, purpose: "search" | "tailor" | "apply" | "general") {
-  if (purpose === "search") {
-    return model.category === "search" || model.category === "general";
+function matchesPurpose(model: OpenRouterModel, purpose: ModelPurpose) {
+  if (purpose === "search" || purpose === "review") {
+    // Cheap/fast models for search and for the reviewer step.
+    return model.category === "search" || model.category === "general" || /grok|fast|flash|mini|nano|haiku|lite/i.test(model.id);
   }
   if (purpose === "tailor" || purpose === "apply") {
     return model.category === "tailor" || model.category === "apply" || /claude/i.test(model.id);
@@ -1731,8 +1745,8 @@ function matchesPurpose(model: OpenRouterModel, purpose: "search" | "tailor" | "
   return true;
 }
 
-function compareModels(left: OpenRouterModel, right: OpenRouterModel, purpose: "search" | "tailor" | "apply" | "general") {
-  if (purpose === "search") {
+function compareModels(left: OpenRouterModel, right: OpenRouterModel, purpose: ModelPurpose) {
+  if (purpose === "search" || purpose === "review") {
     return scoreSearch(left) - scoreSearch(right);
   }
   return scoreTailor(left) - scoreTailor(right);

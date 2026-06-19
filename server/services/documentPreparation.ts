@@ -67,6 +67,7 @@ export async function prepareDocumentsForJob(jobId: string, instructions?: strin
 
   const baseCv = fromJsonString<Record<string, unknown>>(templateCv.json, {});
   const model = settings.tailorModel || "anthropic/claude-sonnet-4.5";
+  const reviewModel = (settings.reviewModel || "").trim();
   const supporting: SupportingMaterial[] = supportingMaterials
     .filter((material) => material.id !== templateCv.id)
     .slice(0, 12)
@@ -102,7 +103,7 @@ export async function prepareDocumentsForJob(jobId: string, instructions?: strin
   const usedTemplateId = gallery?.id ?? null;
 
   if (gallery?.kind === "html") {
-    const result = await generateTemplateCv({ model, baseCv, supportingMaterials: supporting, job: jobContext, instructions });
+    const result = await generateTemplateCv({ model, reviewModel, baseCv, supportingMaterials: supporting, job: jobContext, instructions });
     templateHtml = gallery.render(result.cv);
     tailoredCvJson = { ...(result.cv as unknown as Record<string, unknown>), rawText: flattenStructuredCv(result.cv) };
     coverLetter = result.coverLetter;
@@ -141,7 +142,7 @@ export async function prepareDocumentsForJob(jobId: string, instructions?: strin
     checklist = docx.checklist;
     formatMode = "docx";
   } else {
-    const generated = await generateDocuments({ model, baseCv, supportingMaterials: supporting, job: jobContext, instructions });
+    const generated = await generateDocuments({ model, reviewModel, baseCv, supportingMaterials: supporting, job: jobContext, instructions });
     tailoredCvJson = (generated.tailoredCv as Record<string, unknown>) ?? baseCv;
     coverLetter = generated.coverLetter || "";
     checklist = Array.isArray(generated.checklist) ? generated.checklist : [];
@@ -489,6 +490,7 @@ const TEMPLATE_SYSTEM_PROMPT =
 // as JSON) so the gallery template can render it.
 async function generateTemplateCv(input: {
   model: string;
+  reviewModel?: string;
   baseCv: unknown;
   supportingMaterials: SupportingMaterial[];
   job: JobContext;
@@ -525,7 +527,9 @@ async function generateTemplateCv(input: {
     ]
   });
 
-  return parseTemplateResponse(response, baseText);
+  const parsed = parseTemplateResponse(response, baseText);
+  const cv = await reviewAndRefineStructured(input.reviewModel || "", input.model, baseText, input.job, parsed.cv);
+  return { ...parsed, cv };
 }
 
 function parseTemplateResponse(response: string, baseText: string) {
@@ -551,6 +555,75 @@ function parseTemplateResponse(response: string, baseText: string) {
     coverLetter: stripFences(coverLetter),
     checklist: Array.isArray(checklist) ? checklist : []
   };
+}
+
+// --- Two-model refinement: a cheap reviewer critiques the draft, then the tailor
+// model improves it. Skipped when no (distinct) review model is configured. ---
+
+async function reviewCvDraft(reviewModel: string, baseText: string, jobDescription: string, tailoredText: string): Promise<string> {
+  try {
+    const response = await runLlm({
+      model: reviewModel,
+      responseFormat: "text",
+      maxTokens: 800,
+      messages: [
+        {
+          role: "system",
+          content:
+            "You are a sharp CV reviewer. Compare the candidate's ORIGINAL CV and the TAILORED CV against the JOB. " +
+            "Give 3-7 short, concrete improvement notes: stronger wording, better ordering, real relevant experience to surface, conciseness, and keywords from the job description. " +
+            "CRUCIAL: flag any fabrication — anything in the tailored CV not supported by the original — and say to remove it. " +
+            "Bullet points only, no preamble. If it is already excellent and faithful, reply with exactly: OK."
+        },
+        { role: "user", content: JSON.stringify({ job: jobDescription.slice(0, 3000), originalCv: baseText.slice(0, 6000), tailoredCv: tailoredText.slice(0, 6000) }) }
+      ]
+    });
+    return response.trim();
+  } catch {
+    return "";
+  }
+}
+
+async function reviewAndRefineText(reviewModel: string, tailorModel: string, baseText: string, job: JobContext, tailoredText: string): Promise<string> {
+  if (!reviewModel || reviewModel === tailorModel || tailoredText.trim().length < 40) return tailoredText;
+  const critique = await reviewCvDraft(reviewModel, baseText, job.description, tailoredText);
+  if (!critique || /^ok\b/i.test(critique)) return tailoredText;
+  try {
+    const response = await runLlmGuarded({
+      model: tailorModel,
+      responseFormat: "text",
+      maxTokens: 8000,
+      messages: [
+        { role: "system", content: "Improve the TAILORED CV using the reviewer's notes. Stay faithful to the ORIGINAL CV — never add anything not in it. Keep the same language, section order, headings, and overall structure. Return ONLY the improved CV as plain text — no commentary, no markers." },
+        { role: "user", content: `JOB: ${job.title} at ${job.company}\n${job.description.slice(0, 3000)}\n\nORIGINAL CV:\n${baseText.slice(0, 6000)}\n\nCURRENT TAILORED CV:\n${tailoredText}\n\nREVIEWER NOTES:\n${critique}` }
+      ]
+    });
+    const refined = stripFences(response);
+    return refined && refined.length >= tailoredText.length * 0.6 ? refined : tailoredText;
+  } catch {
+    return tailoredText;
+  }
+}
+
+async function reviewAndRefineStructured(reviewModel: string, tailorModel: string, baseText: string, job: JobContext, cv: StructuredCv): Promise<StructuredCv> {
+  if (!reviewModel || reviewModel === tailorModel) return cv;
+  const critique = await reviewCvDraft(reviewModel, baseText, job.description, flattenStructuredCv(cv));
+  if (!critique || /^ok\b/i.test(critique)) return cv;
+  try {
+    const response = await runLlmGuarded({
+      model: tailorModel,
+      responseFormat: "text",
+      maxTokens: 8000,
+      messages: [
+        { role: "system", content: "Improve this CV (a JSON object) using the reviewer's notes. Stay faithful to the ORIGINAL CV — never add anything not in it. Keep the EXACT same JSON shape (same keys and section types). Return ONLY the improved JSON object, nothing else." },
+        { role: "user", content: `REVIEWER NOTES:\n${critique}\n\nORIGINAL CV:\n${baseText.slice(0, 6000)}\n\nCURRENT CV JSON:\n${JSON.stringify(cv)}` }
+      ]
+    });
+    const parsed = extractLooseJson<StructuredCv>(response);
+    return isStructuredCv(parsed) ? normalizeStructuredCv(parsed) : cv;
+  } catch {
+    return cv;
+  }
 }
 
 function normalizeStructuredCv(cv: StructuredCv): StructuredCv {
@@ -614,6 +687,7 @@ function toStringArray(value: unknown): string[] {
 
 async function generateDocuments(input: {
   model: string;
+  reviewModel?: string;
   baseCv: unknown;
   supportingMaterials: Array<{
     label: string;
@@ -664,7 +738,16 @@ async function generateDocuments(input: {
       ]
     });
 
-    return parsePreparationResponse(response, input.baseCv);
+    const parsed = parsePreparationResponse(response, input.baseCv);
+    const baseText = typeof (input.baseCv as { rawText?: unknown })?.rawText === "string"
+      ? (input.baseCv as { rawText: string }).rawText
+      : JSON.stringify(input.baseCv);
+    const currentText = String((parsed.tailoredCv as { rawText?: unknown })?.rawText ?? "");
+    const refinedText = await reviewAndRefineText(input.reviewModel || "", input.model, baseText, input.job, currentText);
+    if (refinedText !== currentText) {
+      parsed.tailoredCv = buildTailoredCv(input.baseCv, refinedText);
+    }
+    return parsed;
   } catch (error) {
     const message = error instanceof Error ? error.message : "Unknown AI generation error";
     if (/401|unauthorized|user not found|invalid api key/i.test(message)) {

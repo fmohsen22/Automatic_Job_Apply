@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import {
   AlertTriangle,
@@ -1084,7 +1084,6 @@ function SettingsPage() {
   const [saveState, setSaveState] = useState("");
   const [keySaveState, setKeySaveState] = useState("");
   const [openRouterTestState, setOpenRouterTestState] = useState("");
-  const [modelQuery, setModelQuery] = useState("");
   const openRouterModels = models.data.length
     ? models.data
     : [{ id: "anthropic/claude-sonnet-4.5", name: "Anthropic: Claude Sonnet 4.5", category: "tailor" as const }];
@@ -1190,20 +1189,10 @@ function SettingsPage() {
         </div>
         <div className="form-section">
           <h2>Model Routing</h2>
-          <p>Recommended: fast OpenRouter models for search, Claude for tailoring and apply steps.</p>
+          <p>Click a box and type to search all 341 OpenRouter models by name. Recommended: a cheap/fast model for search, Claude for tailoring, a cheap reviewer.</p>
         </div>
-        <label className="field">
-          <span>Filter Models</span>
-          <input
-            onChange={(event) => setModelQuery(event.target.value)}
-            placeholder="grok fast, claude, flash..."
-            type="text"
-            value={modelQuery}
-          />
-        </label>
         <Field label="Search Model">
           <ModelSelect
-            filter={modelQuery}
             models={openRouterModels}
             purpose="search"
             value={form.searchModel ?? ""}
@@ -1212,7 +1201,6 @@ function SettingsPage() {
         </Field>
         <Field label="Tailor Model (generates / updates the CV)">
           <ModelSelect
-            filter={modelQuery}
             models={openRouterModels}
             purpose="tailor"
             value={form.tailorModel ?? ""}
@@ -1221,7 +1209,6 @@ function SettingsPage() {
         </Field>
         <Field label="Review Model (critiques the draft → Tailor refines)">
           <ModelSelect
-            filter={modelQuery}
             models={openRouterModels}
             purpose="review"
             value={form.reviewModel ?? ""}
@@ -1230,7 +1217,6 @@ function SettingsPage() {
         </Field>
         <Field label="Apply Model">
           <ModelSelect
-            filter={modelQuery}
             models={openRouterModels}
             purpose="apply"
             value={form.applyModel ?? ""}
@@ -1239,7 +1225,6 @@ function SettingsPage() {
         </Field>
         <Field label="General Model">
           <ModelSelect
-            filter={modelQuery}
             models={openRouterModels}
             purpose="general"
             value={form.generalModel ?? ""}
@@ -1605,36 +1590,71 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
 }
 
 function ModelSelect({
-  filter,
   models,
   purpose,
   value,
   onChange
 }: {
-  filter: string;
   models: OpenRouterModel[];
   purpose: ModelPurpose;
   value: string;
   onChange: (value: string) => void;
 }) {
-  const query = filter.trim().toLowerCase();
-  // When searching, look across ALL models (so you can pick any model for any
-  // role to test). With no query, show the models relevant to this role.
-  const base = query ? models : models.filter((model) => matchesPurpose(model, purpose));
-  const filtered = base
-    .filter((model) => !query || [model.id, model.name, model.category].some((field) => field.toLowerCase().includes(query)))
-    .sort((left, right) => compareModels(left, right, purpose));
+  const [query, setQuery] = useState("");
+  const [open, setOpen] = useState(false);
+  const wrapRef = useRef<HTMLDivElement>(null);
+  const selected = models.find((model) => model.id === value);
 
-  const options = filtered.length ? filtered : models;
+  useEffect(() => {
+    const onDocClick = (event: MouseEvent) => {
+      if (wrapRef.current && !wrapRef.current.contains(event.target as Node)) setOpen(false);
+    };
+    document.addEventListener("mousedown", onDocClick);
+    return () => document.removeEventListener("mousedown", onDocClick);
+  }, []);
+
+  const q = query.trim().toLowerCase();
+  // With a query, search across ALL models; with none, suggest role-relevant ones.
+  const base = q ? models : models.filter((model) => matchesPurpose(model, purpose));
+  const filtered = base
+    .filter((model) => !q || [model.id, model.name, model.category].some((field) => field.toLowerCase().includes(q)))
+    .sort((left, right) => compareModels(left, right, purpose))
+    .slice(0, 80);
+
+  const pick = (id: string) => { onChange(id); setQuery(""); setOpen(false); };
 
   return (
-    <select onChange={(event) => onChange(event.target.value)} value={value || chooseModel(options, purpose)?.id || ""}>
-      {options.map((model) => (
-        <option key={model.id} value={model.id}>
-          {modelLabel(model)}
-        </option>
-      ))}
-    </select>
+    <div className={open ? "model-combo open" : "model-combo"} ref={wrapRef}>
+      <input
+        className="model-combo-input"
+        type="text"
+        value={open ? query : (selected ? selected.name : value)}
+        placeholder={selected ? selected.name : "Search models by name…"}
+        onFocus={() => { setOpen(true); setQuery(""); }}
+        onChange={(event) => { setQuery(event.target.value); setOpen(true); }}
+        onKeyDown={(event) => {
+          if (event.key === "Escape") setOpen(false);
+          if (event.key === "Enter" && filtered[0]) { event.preventDefault(); pick(filtered[0].id); }
+        }}
+      />
+      <span className="model-combo-caret" aria-hidden>⌄</span>
+      {open ? (
+        <div className="model-combo-list">
+          {filtered.length === 0 ? <div className="model-combo-empty">No models match “{query}”.</div> : null}
+          {filtered.map((model) => (
+            <button
+              type="button"
+              key={model.id}
+              className={model.id === value ? "model-combo-option selected" : "model-combo-option"}
+              onMouseDown={(event) => { event.preventDefault(); pick(model.id); }}
+            >
+              <span className="mco-name">{model.name}</span>
+              <span className="mco-id">{model.id}{model.contextLength ? ` · ${Math.round(model.contextLength / 1000)}k` : ""}</span>
+            </button>
+          ))}
+        </div>
+      ) : null}
+    </div>
   );
 }
 
@@ -1723,10 +1743,6 @@ function titleCase(value: string) {
   return value.replace(/[-_]/g, " ").replace(/\b\w/g, (letter) => letter.toUpperCase());
 }
 
-function modelLabel(model: OpenRouterModel) {
-  const context = model.contextLength ? ` - ${Math.round(model.contextLength / 1000)}k ctx` : "";
-  return `OpenRouter: ${model.name} (${model.id})${context}`;
-}
 
 function chooseModel(models: OpenRouterModel[], purpose: ModelPurpose) {
   const filtered = models.filter((model) => matchesPurpose(model, purpose));

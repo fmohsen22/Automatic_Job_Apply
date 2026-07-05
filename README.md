@@ -22,18 +22,18 @@ The app runs on your own computer. It stores data in local SQLite, encrypts save
 
 ## Output formats
 
-When you generate materials for a job you choose an **Output format / template**:
+When you generate materials for a job you choose an **Output format / template** from a visual gallery — every template shows a **preview thumbnail** so you can see the design before picking it. **Every format produces an editable Word (.docx) file** so you can always fine-tune the result yourself:
 
-- **Navy / Energy** — an HTML-rendered design; your tailored content becomes a polished **PDF**. Works from any base CV (including a PDF). Auto-PDF is reliable here.
+- **Navy / Energy** — an HTML-rendered design; your tailored content becomes a polished **PDF** plus a clean editable **Word** version of the same content. Works from any base CV (including a PDF). Auto-PDF is reliable here.
 - **Designed Word templates** (Simple Objective, Classic Header, ATS Clean, Photo — Modern, etc.) — your tailored content is poured into a real `.docx` design. The **Word file is the accurate, editable output**; an auto-PDF is produced best-effort (some designed templates add blank pages under LibreOffice — open the Word file and "Save as PDF" for a clean one).
 - **My Word template** — if your selected CV is a `.docx`, the app rewrites that file in place.
-- **Plain text** — text-only tailoring.
+- **Plain text** — text-only tailoring, plus an auto-built editable **Word** version.
 
 **Profile photo:** upload a headshot on the **Base CV** page. Photo templates (e.g. *Photo — Modern*) insert it automatically (cropped square); other templates ignore it. Add new gallery designs by dropping a `.docx` into `server/templates/docx/` and registering it in `server/services/templates.ts`.
 
 ## Current Limitations
 
-- **Editing a designed PDF directly is not supported** — gallery templates produce a PDF (and HTML). For an editable Word file, use the *My Word template* option with your own `.docx`.
+- **Editing a designed PDF directly is not supported** — but every format now also produces an editable Word file, so edit the `.docx` and export a fresh PDF from Word if needed.
 - Rewriting an arbitrary uploaded PDF *in its original design* is not possible (a PDF is a fixed layout). Use a gallery template or a Word source instead.
 - **Automatic PDF export of the tailored CV needs LibreOffice** installed (`soffice`). Without it you still get the exact-format Word file — open it and "Save as PDF", or install LibreOffice for one-click PDFs.
 - Job search currently depends on Tavily plus generated search queries. For very broad market coverage, more direct providers/adapters should be added.
@@ -159,8 +159,11 @@ You can import:
 - certificates
 - project descriptions
 - detailed personal experience notes
+- **pasted text** — use the "Paste text" card to type or paste anything (projects, certificates, achievements, references); it becomes evidence the AI can draw from
 
 Folder import stores every supported file, not just one CV.
+
+You can add **several CVs**, but exactly **one** acts as the base/template for formatting — everything else is supporting evidence. Pick it on `CV Versions` ("Use as Template"); the page shows your current base CV in a card at the top.
 
 ### 2. Select The CV Template
 
@@ -216,7 +219,7 @@ It creates:
 
 Download the tailored CV as **Word**, **PDF**, or plain **text** from the job detail page.
 
-The model is instructed not to invent experience. Missing requirements should appear in the checklist, not be falsely added to the CV.
+**Truthfulness guarantee:** every generation prompt instructs the model to use ONLY facts from your uploaded materials — never invent employers, titles, dates, degrees, certificates, skills, or metrics. The reviewer model cross-checks each claim in the draft against your original CV and flags anything unsupported, and the refine step removes flagged content. Missing requirements appear in the checklist as gaps — never falsely added to the CV.
 
 ### 5. Assisted Apply
 

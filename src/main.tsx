@@ -4,8 +4,10 @@ import {
   AlertTriangle,
   ArrowLeft,
   CalendarX2,
+  Check,
   CheckCircle2,
   ClipboardList,
+  ClipboardPaste,
   Download,
   ExternalLink,
   FilePenLine,
@@ -19,8 +21,11 @@ import {
   Save,
   Search,
   Settings as SettingsIcon,
+  ShieldCheck,
   WandSparkles,
-  XCircle
+  X,
+  XCircle,
+  ZoomIn
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import "./styles.css";
@@ -143,7 +148,14 @@ type DocSet = {
   cvHtmlAvailable?: boolean;
 };
 
-type TemplateInfo = { id: string; name: string; description: string; kind: "html" | "docx"; needsPhoto?: boolean };
+type TemplateInfo = {
+  id: string;
+  name: string;
+  description: string;
+  kind: "html" | "docx";
+  needsPhoto?: boolean;
+  previewUrl?: string | null;
+};
 
 type ApplicationStep = {
   label: string;
@@ -171,13 +183,30 @@ const autonomyLabels: Record<AutonomyLevel, string> = {
   L2: "Full-auto"
 };
 
-const views: Array<{ id: View; label: string; icon: LucideIcon }> = [
-  { id: "dashboard", label: "Dashboard", icon: Gauge },
-  { id: "search", label: "Job Search", icon: Search },
-  { id: "settings", label: "Settings", icon: SettingsIcon },
-  { id: "base-cv", label: "Base CV", icon: FileUp },
-  { id: "versions", label: "CV Versions", icon: FilePenLine },
-  { id: "audit", label: "Audit Log", icon: History }
+type NavItem = { id: View; label: string; icon: LucideIcon };
+
+const navGroups: Array<{ title: string; items: NavItem[] }> = [
+  {
+    title: "Workflow",
+    items: [
+      { id: "dashboard", label: "Dashboard", icon: Gauge },
+      { id: "search", label: "Job Search", icon: Search }
+    ]
+  },
+  {
+    title: "Your Profile",
+    items: [
+      { id: "base-cv", label: "Base CV", icon: FileUp },
+      { id: "versions", label: "CV Versions", icon: FilePenLine }
+    ]
+  },
+  {
+    title: "System",
+    items: [
+      { id: "settings", label: "Settings", icon: SettingsIcon },
+      { id: "audit", label: "Audit Log", icon: History }
+    ]
+  }
 ];
 
 const emptySummary: DashboardSummary = {
@@ -291,20 +320,27 @@ function App() {
           </div>
         </div>
         <nav aria-label="Primary navigation">
-          {views.map((view) => {
-            const Icon = view.icon;
-            return (
-              <button
-                className={activeView === view.id ? "nav-item active" : "nav-item"}
-                key={view.id}
-                onClick={() => setActiveView(view.id)}
-                type="button"
-              >
-                <Icon size={18} />
-                {view.label}
-              </button>
-            );
-          })}
+          {navGroups.map((group) => (
+            <div className="nav-group" key={group.title}>
+              <span className="nav-group-title">{group.title}</span>
+              {group.items.map((view) => {
+                const Icon = view.icon;
+                const isActive =
+                  activeView === view.id || (view.id === "search" && activeView === "job-detail");
+                return (
+                  <button
+                    className={isActive ? "nav-item active" : "nav-item"}
+                    key={view.id}
+                    onClick={() => setActiveView(view.id)}
+                    type="button"
+                  >
+                    <Icon size={18} />
+                    {view.label}
+                  </button>
+                );
+              })}
+            </div>
+          ))}
         </nav>
       </aside>
 
@@ -623,11 +659,22 @@ function JobDetail({ jobId, onBack }: { jobId: string; onBack: () => void }) {
   const [isPreparing, setIsPreparing] = useState(false);
   const [applyStatus, setApplyStatus] = useState("");
   const [isApplying, setIsApplying] = useState(false);
+  const [lightbox, setLightbox] = useState<{ src: string; name: string } | null>(null);
+  const [brokenPreviews, setBrokenPreviews] = useState<Record<string, boolean>>({});
   const latestDocSet = data?.docSets?.[0];
   const latestRun = data?.runs?.[0];
   const templateIsDocx = template.data?.assetType === "docx";
 
   const selectedTemplate = templates.data.find((t) => t.id === format);
+
+  useEffect(() => {
+    if (!lightbox) return;
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setLightbox(null);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [lightbox]);
 
   useEffect(() => {
     // Wait until both the template CV and the gallery list have loaded, then
@@ -721,9 +768,10 @@ function JobDetail({ jobId, onBack }: { jobId: string; onBack: () => void }) {
                 </div>
               )}
             </div>
-            <div className="field">
+            <div className="field format-field">
               <span>Output format / template</span>
               <select
+                className="sr-select"
                 aria-label="Output format"
                 value={format}
                 onChange={(event) => setFormat(event.target.value)}
@@ -743,10 +791,100 @@ function JobDetail({ jobId, onBack }: { jobId: string; onBack: () => void }) {
                   <option value="text">Plain text</option>
                 </optgroup>
               </select>
+              <div className="template-gallery-scroll">
+              <div className="template-gallery">
+                {templateIsDocx ? (
+                  <button
+                    type="button"
+                    className={format === "word" ? "tg-card selected" : "tg-card"}
+                    aria-pressed={format === "word"}
+                    onClick={() => setFormat("word")}
+                    disabled={isPreparing}
+                  >
+                    <span className="tg-thumb">
+                      <span className="tg-ph own">
+                        <FileText size={26} />
+                        <em>Your .docx</em>
+                      </span>
+                    </span>
+                    <span className="tg-body">
+                      <strong>My CV — {template.data?.label}</strong>
+                      <span className="tg-desc">Your own Word file, rewritten in place — exact layout kept.</span>
+                      <span className="tg-badges">
+                        <span className="tg-badge">Editable Word + PDF</span>
+                      </span>
+                    </span>
+                    {format === "word" ? <span className="tg-check"><Check size={12} strokeWidth={3.2} /></span> : null}
+                  </button>
+                ) : null}
+                {templates.data.map((t) => {
+                  const preview = t.previewUrl && !brokenPreviews[t.id] ? t.previewUrl : null;
+                  return (
+                    <button
+                      type="button"
+                      key={t.id}
+                      className={format === t.id ? "tg-card selected" : "tg-card"}
+                      aria-pressed={format === t.id}
+                      onClick={() => setFormat(t.id)}
+                      disabled={isPreparing}
+                    >
+                      <span className="tg-thumb">
+                        {preview ? (
+                          <>
+                            <img
+                              src={preview}
+                              alt={`${t.name} template preview`}
+                              loading="lazy"
+                              onError={() => setBrokenPreviews((current) => ({ ...current, [t.id]: true }))}
+                              onClick={() => setLightbox({ src: preview, name: t.name })}
+                            />
+                            <span className="tg-zoom" aria-hidden="true"><ZoomIn size={13} /></span>
+                          </>
+                        ) : (
+                          <span className="tg-ph">
+                            <FileText size={26} />
+                            <em>{t.kind === "docx" ? "Word design" : "PDF design"}</em>
+                          </span>
+                        )}
+                      </span>
+                      <span className="tg-body">
+                        <strong>{t.name}</strong>
+                        <span className="tg-desc">{t.description}</span>
+                        <span className="tg-badges">
+                          <span className="tg-badge">Editable Word + PDF</span>
+                          {t.needsPhoto ? <span className="tg-badge photo">Photo</span> : null}
+                        </span>
+                      </span>
+                      {format === t.id ? <span className="tg-check"><Check size={12} strokeWidth={3.2} /></span> : null}
+                    </button>
+                  );
+                })}
+                <button
+                  type="button"
+                  className={format === "text" ? "tg-card selected" : "tg-card"}
+                  aria-pressed={format === "text"}
+                  onClick={() => setFormat("text")}
+                  disabled={isPreparing}
+                >
+                  <span className="tg-thumb">
+                    <span className="tg-ph plain">
+                      <ClipboardList size={26} />
+                      <em>No design</em>
+                    </span>
+                  </span>
+                  <span className="tg-body">
+                    <strong>Plain text</strong>
+                    <span className="tg-desc">Simple text output you can paste anywhere.</span>
+                    <span className="tg-badges">
+                      <span className="tg-badge">Editable Word</span>
+                    </span>
+                  </span>
+                  {format === "text" ? <span className="tg-check"><Check size={12} strokeWidth={3.2} /></span> : null}
+                </button>
+              </div>
+              </div>
               {format === "word" ? (
                 <p className="format-hint">Your uploaded Word CV, rewritten in place for this job — your exact layout is preserved.</p>
-              ) : selectedTemplate ? (
-                <p className="format-hint">{selectedTemplate.description}</p>
               ) : null}
               {!templateIsDocx ? (
                 <p className="format-hint photo">Want your <strong>own exact design</strong> as a template? Upload your CV as a Word <strong>.docx</strong> on the Base CV page — it then appears here as “My CV”. (A PDF can’t be reproduced exactly.)</p>
@@ -764,6 +902,10 @@ function JobDetail({ jobId, onBack }: { jobId: string; onBack: () => void }) {
                 disabled={isPreparing}
               />
             </Field>
+            <p className="assurance-note">
+              <ShieldCheck size={15} />
+              <span>Tailored CVs only use facts from your uploaded materials — the app never invents experience. Missing requirements show up in the checklist instead.</span>
+            </p>
             <button
               className="button primary prep-button"
               onClick={() => void prepare()}
@@ -847,7 +989,7 @@ function JobDetail({ jobId, onBack }: { jobId: string; onBack: () => void }) {
                       {latestDocSet.cvDocxAvailable ? (
                         <a className="button primary icon-button small" href={`/api/docsets/${latestDocSet.id}/cv.docx`}>
                           <Download size={14} />
-                          <span>Word</span>
+                          <span>Download Word (editable)</span>
                         </a>
                       ) : null}
                       {latestDocSet.cvPdfAvailable ? (
@@ -857,7 +999,7 @@ function JobDetail({ jobId, onBack }: { jobId: string; onBack: () => void }) {
                         </a>
                       ) : null}
                       <button
-                        className="button icon-button small"
+                        className="button ghost icon-button small"
                         onClick={() => downloadText(`${safeFileName(`${data.company}_${data.title}_CV`)}.txt`, stringifyCv(latestDocSet.cvVersion.json))}
                         type="button"
                       >
@@ -883,7 +1025,7 @@ function JobDetail({ jobId, onBack }: { jobId: string; onBack: () => void }) {
                     </div>
                     <div className="download-group">
                       <button
-                        className="button icon-button small"
+                        className="button ghost icon-button small"
                         onClick={() => downloadText(`${safeFileName(`${data.company}_${data.title}_CoverLetter`)}.txt`, latestDocSet.coverLetter || "")}
                         type="button"
                         disabled={!latestDocSet.coverLetter}
@@ -941,6 +1083,23 @@ function JobDetail({ jobId, onBack }: { jobId: string; onBack: () => void }) {
             </div>
           </div>
         </section>
+      ) : null}
+      {lightbox ? (
+        <div
+          className="lightbox"
+          role="dialog"
+          aria-modal="true"
+          aria-label={`${lightbox.name} template preview`}
+          onClick={() => setLightbox(null)}
+        >
+          <figure className="lightbox-body" onClick={(event) => event.stopPropagation()}>
+            <button type="button" className="lightbox-close" onClick={() => setLightbox(null)} aria-label="Close preview">
+              <X size={17} />
+            </button>
+            <img src={lightbox.src} alt={`${lightbox.name} template preview, enlarged`} />
+            <figcaption>{lightbox.name}</figcaption>
+          </figure>
+        </div>
       ) : null}
     </>
   );
@@ -1281,6 +1440,30 @@ function BaseCvImport() {
   const [photoStatus, setPhotoStatus] = useState("");
   const [photoVersion, setPhotoVersion] = useState(0);
   const [photoBroken, setPhotoBroken] = useState(false);
+  const [pasteLabel, setPasteLabel] = useState("");
+  const [pasteContent, setPasteContent] = useState("");
+  const [pasteStatus, setPasteStatus] = useState("");
+  const [isSavingPaste, setIsSavingPaste] = useState(false);
+
+  const savePastedInfo = async () => {
+    if (!pasteLabel.trim() || !pasteContent.trim()) return;
+    setIsSavingPaste(true);
+    setPasteStatus("Saving…");
+    try {
+      await sendJson("/api/cv/import", "POST", {
+        label: pasteLabel.trim(),
+        content: pasteContent,
+        source: "paste"
+      });
+      setPasteStatus(`Saved “${pasteLabel.trim()}” — it now appears in CV Versions as evidence the AI can draw from.`);
+      setPasteLabel("");
+      setPasteContent("");
+    } catch (error) {
+      setPasteStatus(error instanceof Error ? error.message : "Could not save the pasted info");
+    } finally {
+      setIsSavingPaste(false);
+    }
+  };
 
   const uploadPhoto = async (file: File | undefined) => {
     if (!file) return;
@@ -1332,83 +1515,132 @@ function BaseCvImport() {
   return (
     <>
       <PageHeader title="Base CV Import" description="Upload CVs, certificates, profile notes, and evidence documents. Choose one CV as the template in CV Versions." />
-      <form className="panel import-panel" onSubmit={(event) => void importCv(event)}>
-        <p className="prep-intro">
-          One CV is your <strong>template</strong> (its design is used for the “My CV” output and to recreate it). Everything else you add here — extra experiences, certificates, links, project notes — becomes <strong>supporting evidence</strong>: the AI pulls in whatever is relevant to each job when tailoring, without dumping it all in. So feel free to paste lots of detail.
-        </p>
-        <Field label="Version Label">
-          <input onChange={(event) => setLabel(event.target.value)} type="text" value={label} />
-        </Field>
-        <div className="segmented" role="tablist" aria-label="Import format">
-          <button className={mode === "text" ? "selected" : ""} onClick={() => setMode("text")} type="button">
-            Text
-          </button>
-          <button className={mode === "json" ? "selected" : ""} onClick={() => setMode("json")} type="button">
-            JSON
-          </button>
-        </div>
-        <textarea
-          onChange={(event) => setContent(event.target.value)}
-          placeholder={mode === "json" ? "{ \"summary\": \"...\", \"experience\": [] }" : "Paste CV text, certificates, project notes, achievements, or detailed background information here"}
-          spellCheck={false}
-          value={content}
-        />
-        <div className="folder-import">
-          <div>
-            <strong>Upload CV / certificates (recommended)</strong>
-            <p>Pick one or more files. Upload your CV as <strong>Word (.docx)</strong> so tailored CVs keep your exact layout. PDF, DOCX, JSON, TXT, and MD are supported.</p>
+      <div className="basecv-grid">
+        <form className="panel import-panel" onSubmit={(event) => void importCv(event)}>
+          <div className="panel-header">
+            <h2>Your CV & documents</h2>
+            <span>Upload or paste</span>
           </div>
-          <input
-            multiple
-            onChange={(event) => setPickedFiles(Array.from(event.target.files ?? []))}
-            type="file"
-            accept=".docx,.pdf,.json,.txt,.md"
-          />
-          <button className="button" onClick={() => void submitFiles(pickedFiles, "files")} type="button" disabled={!pickedFiles.length}>
-            Upload Files
-          </button>
-        </div>
-        <div className="folder-import">
-          <div>
-            <strong>Folder import</strong>
-            <p>Or choose a whole folder of CVs, certificates, and profile documents at once.</p>
+          <p className="prep-intro">
+            One CV is your <strong>template</strong> (its design is used for the “My CV” output and to recreate it). Everything else you add here — extra experiences, certificates, links, project notes — becomes <strong>supporting evidence</strong>: the AI pulls in whatever is relevant to each job when tailoring, without dumping it all in. So feel free to paste lots of detail.
+          </p>
+          <Field label="Version Label">
+            <input onChange={(event) => setLabel(event.target.value)} type="text" value={label} />
+          </Field>
+          <div className="segmented" role="tablist" aria-label="Import format">
+            <button className={mode === "text" ? "selected" : ""} onClick={() => setMode("text")} type="button">
+              Text
+            </button>
+            <button className={mode === "json" ? "selected" : ""} onClick={() => setMode("json")} type="button">
+              JSON
+            </button>
           </div>
-          <input
-            multiple
-            onChange={(event) => setFolderFiles(Array.from(event.target.files ?? []))}
-            type="file"
-            webkitdirectory="true"
+          <textarea
+            onChange={(event) => setContent(event.target.value)}
+            placeholder={mode === "json" ? "{ \"summary\": \"...\", \"experience\": [] }" : "Paste CV text, certificates, project notes, achievements, or detailed background information here"}
+            spellCheck={false}
+            value={content}
           />
-          <button className="button" onClick={() => void submitFiles(folderFiles, "folder files")} type="button" disabled={!folderFiles.length}>
-            Import Folder
-          </button>
-        </div>
-        <div className="form-footer">
-          <span>{status}</span>
-          <IconButton icon={FileUp} label="Import Base CV" primary submit disabled={!content.trim() || !label.trim()} />
-        </div>
-      </form>
-      <section className="panel photo-panel">
-        <div className="panel-header">
-          <h2>Profile Photo</h2>
-          <span>Used by photo templates</span>
-        </div>
-        <div className="photo-row">
-          <img
-            className="photo-thumb"
-            style={{ display: photoBroken ? "none" : "block" }}
-            src={`/api/cv/photo?v=${photoVersion}`}
-            alt="Profile"
-            onError={() => setPhotoBroken(true)}
-            onLoad={() => setPhotoBroken(false)}
-          />
-          <div className="photo-controls">
-            <p>Upload a headshot. Photo templates (e.g. <strong>Photo — Modern</strong>) will use it automatically; other templates ignore it. It’s cropped to a square.</p>
-            <input type="file" accept="image/*" onChange={(event) => void uploadPhoto(event.target.files?.[0])} />
-            <span className="subtle">{photoStatus}</span>
+          <div className="folder-import">
+            <div>
+              <strong>Upload CV / certificates (recommended)</strong>
+              <p>Pick one or more files. Upload your CV as <strong>Word (.docx)</strong> so tailored CVs keep your exact layout. PDF, DOCX, JSON, TXT, and MD are supported.</p>
+            </div>
+            <input
+              multiple
+              onChange={(event) => setPickedFiles(Array.from(event.target.files ?? []))}
+              type="file"
+              accept=".docx,.pdf,.json,.txt,.md"
+            />
+            <button className="button" onClick={() => void submitFiles(pickedFiles, "files")} type="button" disabled={!pickedFiles.length}>
+              Upload Files
+            </button>
+            <p className="basecv-hint">
+              After uploading, open <strong>CV Versions</strong> and press “Use as Template” on the CV whose design you want to keep — that becomes your base CV.
+            </p>
           </div>
+          <div className="folder-import">
+            <div>
+              <strong>Folder import</strong>
+              <p>Or choose a whole folder of CVs, certificates, and profile documents at once.</p>
+            </div>
+            <input
+              multiple
+              onChange={(event) => setFolderFiles(Array.from(event.target.files ?? []))}
+              type="file"
+              webkitdirectory="true"
+            />
+            <button className="button" onClick={() => void submitFiles(folderFiles, "folder files")} type="button" disabled={!folderFiles.length}>
+              Import Folder
+            </button>
+          </div>
+          <div className="form-footer">
+            <span>{status}</span>
+            <IconButton icon={FileUp} label="Import Base CV" primary submit disabled={!content.trim() || !label.trim()} />
+          </div>
+        </form>
+        <div className="basecv-side">
+          <section className="panel paste-panel">
+            <div className="panel-header">
+              <h2>Paste text</h2>
+              <span>Quick evidence</span>
+            </div>
+            <p className="prep-intro">
+              Everything you paste here becomes <strong>evidence</strong> the AI can draw from when tailoring — projects, certificates, achievements, references, links. It’s only used where it’s relevant to a job.
+            </p>
+            <Field label="What is this? e.g. Projects at Siemens, IELTS certificate…">
+              <input
+                onChange={(event) => setPasteLabel(event.target.value)}
+                placeholder="Give it a short name"
+                type="text"
+                value={pasteLabel}
+              />
+            </Field>
+            <Field label="Content">
+              <textarea
+                className="paste-textarea"
+                onChange={(event) => setPasteContent(event.target.value)}
+                placeholder="Paste the details here — bullet points, full sentences, raw notes: all fine."
+                spellCheck={false}
+                value={pasteContent}
+              />
+            </Field>
+            <div className="form-footer">
+              <span>{pasteStatus}</span>
+              <button
+                className="button primary icon-button"
+                onClick={() => void savePastedInfo()}
+                type="button"
+                disabled={isSavingPaste || !pasteLabel.trim() || !pasteContent.trim()}
+              >
+                {isSavingPaste ? <Loader2 className="spin" size={17} /> : <ClipboardPaste size={17} />}
+                <span>{isSavingPaste ? "Saving…" : "Save pasted info"}</span>
+              </button>
+            </div>
+          </section>
+          <section className="panel photo-panel">
+            <div className="panel-header">
+              <h2>Profile Photo</h2>
+              <span>Used by photo templates</span>
+            </div>
+            <div className="photo-row">
+              <img
+                className="photo-thumb"
+                style={{ display: photoBroken ? "none" : "block" }}
+                src={`/api/cv/photo?v=${photoVersion}`}
+                alt="Profile"
+                onError={() => setPhotoBroken(true)}
+                onLoad={() => setPhotoBroken(false)}
+              />
+              <div className="photo-controls">
+                <p>Upload a headshot. Photo templates (e.g. <strong>Photo — Modern</strong>) will use it automatically; other templates ignore it. It’s cropped to a square.</p>
+                <input type="file" accept="image/*" onChange={(event) => void uploadPhoto(event.target.files?.[0])} />
+                <span className="subtle">{photoStatus}</span>
+              </div>
+            </div>
+          </section>
         </div>
-      </section>
+      </div>
     </>
   );
 }
@@ -1480,16 +1712,38 @@ function CvVersions() {
   return (
     <>
       <PageHeader title="CV Versions" description="One CV is the template (its design is used for your “My CV” output). Every other CV is evidence the AI draws on when tailoring." />
-      <section className="status-strip">
-        <StatusPill state={template.data ? "online" : "warning"} label={template.data ? "Template" : "Missing"} />
-        <span>{template.data ? `“${template.data.label}” is the active template. Others are used as supporting evidence — toggle any off to exclude it from tailoring.` : "Select one uploaded CV as the template before preparing applications."}</span>
-      </section>
+      {template.data ? (
+        <section className="panel base-cv-hero">
+          <div className="hero-icon"><FileText size={26} /></div>
+          <div className="hero-main">
+            <p className="hero-eyebrow">Your Base CV</p>
+            <h2>{template.data.label}</h2>
+            <p className="hero-copy">This CV is the template — tailored CVs keep its structure. Everything below feeds in as supporting evidence.</p>
+          </div>
+          <div className="hero-meta">
+            <span className={`hero-format ${template.data.assetType === "docx" ? "docx" : template.data.assetType === "pdf" ? "pdf" : "text"}`}>
+              {(template.data.assetType ?? "text").toUpperCase()}
+            </span>
+            <span className="hero-date">Added {formatDate(template.data.createdAt)}</span>
+          </div>
+        </section>
+      ) : (
+        <section className="panel base-cv-hero empty">
+          <div className="hero-icon warn"><AlertTriangle size={24} /></div>
+          <div className="hero-main">
+            <p className="hero-eyebrow">Your Base CV</p>
+            <h2>No base CV chosen yet</h2>
+            <p className="hero-copy">Pick a CV below and press “Use as Template”. Tailored CVs will keep its structure — everything else feeds in as supporting evidence.</p>
+          </div>
+        </section>
+      )}
       <section className="split">
         <div className="panel version-list">
           <div className="panel-header">
             <h2>Versions</h2>
             <span>{loading ? "Loading" : error ? "Offline" : `${data.length} total`}</span>
           </div>
+          <p className="evidence-note">Everything here except the base CV counts as <strong>evidence</strong> — the AI pulls in whatever is relevant to each job.</p>
           {data.length === 0 ? <p className="empty-state">No CV versions imported yet.</p> : null}
           {data.map((version) => {
             const role = roleOf(version);
@@ -1628,6 +1882,9 @@ function ModelSelect({
       <input
         className="model-combo-input"
         type="text"
+        role="combobox"
+        aria-expanded={open}
+        aria-autocomplete="list"
         value={open ? query : (selected ? selected.name : value)}
         placeholder={selected ? selected.name : "Search models by name…"}
         onFocus={() => { setOpen(true); setQuery(""); }}

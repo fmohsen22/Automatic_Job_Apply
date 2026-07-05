@@ -57,6 +57,30 @@ const AddJobSchema = z.object({
   }).optional()
 });
 
+// Score a job against the user's latest (non-tailored) CV — shared by the
+// add-job and refetch routes so both rank identically.
+async function rankAgainstLatestCv(input: { title: string; company: string; description: string }) {
+  const [settings, latestCv] = await Promise.all([
+    readSettings(),
+    prisma.cvVersion.findFirst({ where: { NOT: { source: { startsWith: "tailored:" } } }, orderBy: { createdAt: "desc" } })
+  ]);
+  const cv = latestCv ? fromJsonString(latestCv.json, {}) : {};
+  let ranking = { score: 65, reasons: ["Added manually."] };
+  try {
+    ranking = await rankJob({
+      cv,
+      title: input.title,
+      company: input.company,
+      description: input.description,
+      fallbackScore: 65,
+      model: settings.searchModel || "google/gemini-2.5-flash-lite"
+    });
+  } catch {
+    // keep the neutral fallback
+  }
+  return ranking;
+}
+
 // Add a job the user found themselves (by URL and/or pasted text), score the fit,
 // and save it so they can prepare a tailored CV for it.
 router.post("/", asyncRoute(async (req, res) => {
@@ -65,11 +89,9 @@ router.post("/", asyncRoute(async (req, res) => {
   let description = parsed.description?.trim() || "";
   let title = parsed.title?.trim() || "";
   let company = parsed.company?.trim() || "";
+  let fetchedLocation = "";
 
-  const [settings, latestCv] = await Promise.all([
-    readSettings(),
-    prisma.cvVersion.findFirst({ where: { NOT: { source: { startsWith: "tailored:" } } }, orderBy: { createdAt: "desc" } })
-  ]);
+  const settings = await readSettings();
 
   // If we have a URL but are missing details, fetch and extract them.
   if (/^https?:\/\//i.test(url) && (!description || !title)) {
@@ -78,6 +100,7 @@ router.post("/", asyncRoute(async (req, res) => {
       title = title || fetched.title;
       company = company || fetched.company;
       description = description || fetched.description;
+      fetchedLocation = fetched.location || "";
     }
   }
 
@@ -111,15 +134,9 @@ router.post("/", asyncRoute(async (req, res) => {
   }
 
   const finalUrl = /^https?:\/\//i.test(url) ? url : `manual:${randomUUID()}`;
-  const location = parsed.location?.trim() || "Not specified";
+  const location = parsed.location?.trim() || fetchedLocation || "Not specified";
 
-  const cv = latestCv ? fromJsonString(latestCv.json, {}) : {};
-  let ranking = { score: 65, reasons: ["Added manually."] };
-  try {
-    ranking = await rankJob({ cv, title, company, description, fallbackScore: 65, model: settings.searchModel || "google/gemini-2.5-flash-lite" });
-  } catch {
-    // keep the neutral fallback
-  }
+  const ranking = await rankAgainstLatestCv({ title, company, description });
 
   const saved = await prisma.job.upsert({
     where: { url: finalUrl },
@@ -338,6 +355,53 @@ router.post("/search", asyncRoute(async (req, res) => {
     });
     throw error;
   }
+}));
+
+// Re-fetch a job's posting from its URL (e.g. after an import grabbed nav junk),
+// replace the stored details, and re-rank it against the user's CV.
+router.post("/:id/refetch", asyncRoute(async (req, res) => {
+  const job = await prisma.job.findUnique({ where: { id: req.params.id } });
+  if (!job) {
+    res.status(404).json({ error: "Job not found" });
+    return;
+  }
+  if (!/^https?:\/\//i.test(job.url)) {
+    res.status(400).json({ error: "This job has no fetchable URL (it was added manually). Edit it or add it again with a link." });
+    return;
+  }
+
+  const fetched = await fetchJobPage(job.url);
+  if (!fetched) {
+    res.status(400).json({ error: "Couldn't re-fetch the job page. The posting may be gone or the site blocked the request." });
+    return;
+  }
+
+  const title = fetched.title || job.title;
+  const company = fetched.company || job.company;
+  const location = fetched.location || job.location;
+  const description = fetched.description;
+  const ranking = await rankAgainstLatestCv({ title, company, description });
+
+  const saved = await prisma.job.update({
+    where: { id: job.id },
+    data: {
+      title,
+      company,
+      location,
+      descr: description,
+      fitScore: ranking.score,
+      fitReasons: toJsonString(ranking.reasons),
+      expired: false,
+      checkedAt: new Date()
+    }
+  });
+
+  await audit("jobs.refetched", `Re-fetched job: ${title} at ${company}`, {
+    entity: "Job",
+    entityId: saved.id,
+    metadata: { url: job.url, fitScore: ranking.score }
+  });
+  res.json(presentJob(saved));
 }));
 
 router.post("/:id/prepare", asyncRoute(async (req, res) => {

@@ -13,6 +13,7 @@ import {
   FilePenLine,
   FileText,
   FileUp,
+  FolderOpen,
   Gauge,
   History,
   Loader2,
@@ -30,7 +31,7 @@ import {
 import type { LucideIcon } from "lucide-react";
 import "./styles.css";
 
-type View = "dashboard" | "search" | "job-detail" | "settings" | "base-cv" | "versions" | "audit";
+type View = "dashboard" | "search" | "job-detail" | "settings" | "base-cv" | "materials" | "audit";
 type AutonomyLevel = "L0" | "L1" | "L2";
 type ApiState<T> = { data: T; loading: boolean; error: string | null };
 
@@ -197,7 +198,7 @@ const navGroups: Array<{ title: string; items: NavItem[] }> = [
     title: "Your Profile",
     items: [
       { id: "base-cv", label: "Base CV", icon: FileUp },
-      { id: "versions", label: "CV Versions", icon: FilePenLine }
+      { id: "materials", label: "My Materials", icon: FolderOpen }
     ]
   },
   {
@@ -354,8 +355,8 @@ function App() {
           />
         )}
         {activeView === "settings" && <SettingsPage />}
-        {activeView === "base-cv" && <BaseCvImport />}
-        {activeView === "versions" && <CvVersions />}
+        {activeView === "base-cv" && <BaseCvPage onGoToMaterials={() => setActiveView("materials")} />}
+        {activeView === "materials" && <MyMaterials onGoToBaseCv={() => setActiveView("base-cv")} />}
         {activeView === "audit" && <AuditLog />}
       </main>
     </div>
@@ -1430,38 +1431,36 @@ function SettingsPage() {
   );
 }
 
-function BaseCvImport() {
-  const [content, setContent] = useState("");
-  const [label, setLabel] = useState("Base CV");
-  const [mode, setMode] = useState<"text" | "json">("text");
-  const [status, setStatus] = useState("");
-  const [folderFiles, setFolderFiles] = useState<File[]>([]);
-  const [pickedFiles, setPickedFiles] = useState<File[]>([]);
+function BaseCvPage({ onGoToMaterials }: { onGoToMaterials: () => void }) {
+  const template = useApi<CvVersion | null>("/api/cv/template", null);
+  const [uploadState, setUploadState] = useState<"idle" | "uploading" | "saved" | "error">("idle");
+  const [uploadStatus, setUploadStatus] = useState("");
   const [photoStatus, setPhotoStatus] = useState("");
   const [photoVersion, setPhotoVersion] = useState(0);
   const [photoBroken, setPhotoBroken] = useState(false);
-  const [pasteLabel, setPasteLabel] = useState("");
-  const [pasteContent, setPasteContent] = useState("");
-  const [pasteStatus, setPasteStatus] = useState("");
-  const [isSavingPaste, setIsSavingPaste] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
-  const savePastedInfo = async () => {
-    if (!pasteLabel.trim() || !pasteContent.trim()) return;
-    setIsSavingPaste(true);
-    setPasteStatus("Saving…");
+  const uploadBaseCv = async (file: File | undefined) => {
+    if (!file) return;
+    setUploadState("uploading");
+    setUploadStatus(`Uploading “${file.name}”…`);
     try {
-      await sendJson("/api/cv/import", "POST", {
-        label: pasteLabel.trim(),
-        content: pasteContent,
-        source: "paste"
+      const imported = await sendJson<CvVersion[]>("/api/cv/import-files", "POST", {
+        files: [{ name: file.name, type: file.type, contentBase64: await fileToBase64(file) }]
       });
-      setPasteStatus(`Saved “${pasteLabel.trim()}” — it now appears in CV Versions as evidence the AI can draw from.`);
-      setPasteLabel("");
-      setPasteContent("");
+      const created = imported[0];
+      if (!created) {
+        throw new Error("The file could not be read. Upload a .docx or .pdf file.");
+      }
+      await sendJson<CvVersion>("/api/cv/template", "PUT", { cvVersionId: created.id });
+      await template.refresh();
+      setUploadState("saved");
+      setUploadStatus("Base CV saved and set as your template");
     } catch (error) {
-      setPasteStatus(error instanceof Error ? error.message : "Could not save the pasted info");
+      setUploadState("error");
+      setUploadStatus(error instanceof Error ? error.message : "Base CV upload failed");
     } finally {
-      setIsSavingPaste(false);
+      if (fileInputRef.current) fileInputRef.current.value = "";
     }
   };
 
@@ -1478,146 +1477,85 @@ function BaseCvImport() {
     }
   };
 
-  const importCv = async (event: React.FormEvent) => {
-    event.preventDefault();
-    setStatus("Importing");
-    try {
-      const parsedContent = mode === "json" ? JSON.parse(content) : content;
-      await sendJson("/api/cv", "POST", { label, source: "paste", content: parsedContent });
-      setStatus("Imported");
-    } catch (error) {
-      setStatus(error instanceof Error ? error.message : "Import failed");
-    }
-  };
-
-  const submitFiles = async (selected: File[], origin: string) => {
-    if (!selected.length) return;
-    setStatus(`Importing ${selected.length} ${origin}`);
-    try {
-      const files = await Promise.all(
-        selected.map(async (file) => ({
-          name: file.name,
-          type: file.type,
-          contentBase64: await fileToBase64(file)
-        }))
-      );
-      const imported = await sendJson<CvVersion[]>("/api/cv/import-files", "POST", {
-        label: selected.length === 1 ? label.trim() : undefined,
-        files
-      });
-      const word = imported.filter((version) => version.source?.toLowerCase().endsWith(".docx")).length;
-      setStatus(`Imported ${imported.length} file(s)${word ? ` — ${word} Word file(s) kept for exact-format tailoring` : ""}.`);
-    } catch (error) {
-      setStatus(error instanceof Error ? error.message : "File import failed");
-    }
-  };
+  const current = template.data;
 
   return (
     <>
-      <PageHeader title="Base CV Import" description="Upload CVs, certificates, profile notes, and evidence documents. Choose one CV as the template in CV Versions." />
+      <PageHeader
+        title="Base CV"
+        description="Your one main CV — tailored CVs are built on its design and content. Certificates, other CVs, and extra info live in My Materials."
+      />
+      {template.loading ? (
+        <section className="panel base-cv-hero">
+          <div className="hero-icon"><Loader2 className="spin" size={24} /></div>
+          <div className="hero-main">
+            <p className="hero-eyebrow">Your Base CV</p>
+            <h2>Checking your base CV…</h2>
+          </div>
+        </section>
+      ) : current ? (
+        <section className="panel base-cv-hero">
+          <div className="hero-icon"><FileText size={26} /></div>
+          <div className="hero-main">
+            <p className="hero-eyebrow">Your Base CV</p>
+            <h2>{current.label}</h2>
+            <p className="hero-confirm">
+              <CheckCircle2 size={15} />
+              <span>{uploadState === "saved" ? "Base CV saved and set as your template" : "This is your base CV"}</span>
+            </p>
+            <p className="hero-copy">
+              Tailored CVs keep this file’s structure and design — only the content is rewritten for each job.
+            </p>
+          </div>
+          <div className="hero-meta">
+            <span className={`hero-format ${current.assetType === "docx" ? "docx" : current.assetType === "pdf" ? "pdf" : "text"}`}>
+              {(current.assetType ?? "text").toUpperCase()}
+            </span>
+            <span className="hero-date">Added {formatDate(current.createdAt)}</span>
+          </div>
+        </section>
+      ) : (
+        <section className="panel base-cv-hero empty">
+          <div className="hero-icon warn"><AlertTriangle size={24} /></div>
+          <div className="hero-main">
+            <p className="hero-eyebrow">Your Base CV</p>
+            <h2>No base CV yet — upload it below</h2>
+            <p className="hero-copy">Upload your CV once and it becomes the base every tailored CV is built on.</p>
+          </div>
+        </section>
+      )}
       <div className="basecv-grid">
-        <form className="panel import-panel" onSubmit={(event) => void importCv(event)}>
+        <section className="panel import-panel basecv-upload">
           <div className="panel-header">
-            <h2>Your CV & documents</h2>
-            <span>Upload or paste</span>
+            <h2>{current ? "Replace your base CV" : "Upload your base CV"}</h2>
+            <span>Word .docx recommended</span>
           </div>
           <p className="prep-intro">
-            One CV is your <strong>template</strong> (its design is used for the “My CV” output and to recreate it). Everything else you add here — extra experiences, certificates, links, project notes — becomes <strong>supporting evidence</strong>: the AI pulls in whatever is relevant to each job when tailoring, without dumping it all in. So feel free to paste lots of detail.
+            Upload your base CV — Word <strong>.docx</strong> recommended so tailored CVs keep your exact layout; PDF works too.
+            {current ? " Uploading a new file replaces your current base CV — the old one stays in My Materials as evidence." : ""}
           </p>
-          <Field label="Version Label">
-            <input onChange={(event) => setLabel(event.target.value)} type="text" value={label} />
-          </Field>
-          <div className="segmented" role="tablist" aria-label="Import format">
-            <button className={mode === "text" ? "selected" : ""} onClick={() => setMode("text")} type="button">
-              Text
-            </button>
-            <button className={mode === "json" ? "selected" : ""} onClick={() => setMode("json")} type="button">
-              JSON
-            </button>
-          </div>
-          <textarea
-            onChange={(event) => setContent(event.target.value)}
-            placeholder={mode === "json" ? "{ \"summary\": \"...\", \"experience\": [] }" : "Paste CV text, certificates, project notes, achievements, or detailed background information here"}
-            spellCheck={false}
-            value={content}
-          />
           <div className="folder-import">
             <div>
-              <strong>Upload CV / certificates (recommended)</strong>
-              <p>Pick one or more files. Upload your CV as <strong>Word (.docx)</strong> so tailored CVs keep your exact layout. PDF, DOCX, JSON, TXT, and MD are supported.</p>
+              <strong>Pick one file (.docx or .pdf)</strong>
+              <p>It is saved immediately and set as your base CV — no extra steps.</p>
             </div>
             <input
-              multiple
-              onChange={(event) => setPickedFiles(Array.from(event.target.files ?? []))}
+              ref={fileInputRef}
               type="file"
-              accept=".docx,.pdf,.json,.txt,.md"
+              accept=".docx,.pdf"
+              aria-label="Upload your base CV"
+              disabled={uploadState === "uploading"}
+              onChange={(event) => void uploadBaseCv(event.target.files?.[0])}
             />
-            <button className="button" onClick={() => void submitFiles(pickedFiles, "files")} type="button" disabled={!pickedFiles.length}>
-              Upload Files
-            </button>
-            <p className="basecv-hint">
-              After uploading, open <strong>CV Versions</strong> and press “Use as Template” on the CV whose design you want to keep — that becomes your base CV.
+          </div>
+          {uploadState !== "idle" ? (
+            <p className={`upload-status ${uploadState === "saved" ? "ok" : uploadState === "error" ? "err" : "busy"}`} role="status">
+              {uploadState === "uploading" ? <Loader2 className="spin" size={15} /> : uploadState === "saved" ? <CheckCircle2 size={15} /> : <AlertTriangle size={15} />}
+              <span>{uploadState === "saved" ? "✓ " : ""}{uploadStatus}</span>
             </p>
-          </div>
-          <div className="folder-import">
-            <div>
-              <strong>Folder import</strong>
-              <p>Or choose a whole folder of CVs, certificates, and profile documents at once.</p>
-            </div>
-            <input
-              multiple
-              onChange={(event) => setFolderFiles(Array.from(event.target.files ?? []))}
-              type="file"
-              webkitdirectory="true"
-            />
-            <button className="button" onClick={() => void submitFiles(folderFiles, "folder files")} type="button" disabled={!folderFiles.length}>
-              Import Folder
-            </button>
-          </div>
-          <div className="form-footer">
-            <span>{status}</span>
-            <IconButton icon={FileUp} label="Import Base CV" primary submit disabled={!content.trim() || !label.trim()} />
-          </div>
-        </form>
+          ) : null}
+        </section>
         <div className="basecv-side">
-          <section className="panel paste-panel">
-            <div className="panel-header">
-              <h2>Paste text</h2>
-              <span>Quick evidence</span>
-            </div>
-            <p className="prep-intro">
-              Everything you paste here becomes <strong>evidence</strong> the AI can draw from when tailoring — projects, certificates, achievements, references, links. It’s only used where it’s relevant to a job.
-            </p>
-            <Field label="What is this? e.g. Projects at Siemens, IELTS certificate…">
-              <input
-                onChange={(event) => setPasteLabel(event.target.value)}
-                placeholder="Give it a short name"
-                type="text"
-                value={pasteLabel}
-              />
-            </Field>
-            <Field label="Content">
-              <textarea
-                className="paste-textarea"
-                onChange={(event) => setPasteContent(event.target.value)}
-                placeholder="Paste the details here — bullet points, full sentences, raw notes: all fine."
-                spellCheck={false}
-                value={pasteContent}
-              />
-            </Field>
-            <div className="form-footer">
-              <span>{pasteStatus}</span>
-              <button
-                className="button primary icon-button"
-                onClick={() => void savePastedInfo()}
-                type="button"
-                disabled={isSavingPaste || !pasteLabel.trim() || !pasteContent.trim()}
-              >
-                {isSavingPaste ? <Loader2 className="spin" size={17} /> : <ClipboardPaste size={17} />}
-                <span>{isSavingPaste ? "Saving…" : "Save pasted info"}</span>
-              </button>
-            </div>
-          </section>
           <section className="panel photo-panel">
             <div className="panel-header">
               <h2>Profile Photo</h2>
@@ -1639,19 +1577,42 @@ function BaseCvImport() {
               </div>
             </div>
           </section>
+          <section className="panel pointer-panel">
+            <div className="panel-header">
+              <h2>Everything else</h2>
+              <span>Evidence for tailoring</span>
+            </div>
+            <p className="prep-intro">
+              Certificates, other CVs, reference letters, and extra info as text go to <strong>My Materials</strong> — the AI pulls relevant facts from them when tailoring each application.
+            </p>
+            <button className="button icon-button" onClick={onGoToMaterials} type="button">
+              <FolderOpen size={17} />
+              <span>Go to My Materials</span>
+            </button>
+          </section>
         </div>
       </div>
     </>
   );
 }
 
-function CvVersions() {
+function MyMaterials({ onGoToBaseCv }: { onGoToBaseCv: () => void }) {
   const { data, loading, error, refresh } = useApi<CvVersion[]>("/api/cv", []);
   const template = useApi<CvVersion | null>("/api/cv/template", null);
   const [selectedId, setSelectedId] = useState("");
   const selected = useMemo(() => data.find((version) => version.id === selectedId) ?? data[0], [data, selectedId]);
   const [draft, setDraft] = useState("");
   const [saveState, setSaveState] = useState("");
+  const [pickedFiles, setPickedFiles] = useState<File[]>([]);
+  const [folderFiles, setFolderFiles] = useState<File[]>([]);
+  const [uploadStatus, setUploadStatus] = useState("");
+  const [isUploading, setIsUploading] = useState(false);
+  const [pasteLabel, setPasteLabel] = useState("");
+  const [pasteContent, setPasteContent] = useState("");
+  const [pasteStatus, setPasteStatus] = useState("");
+  const [isSavingPaste, setIsSavingPaste] = useState(false);
+  const filesInputRef = useRef<HTMLInputElement>(null);
+  const folderInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     if (!selectedId && data[0]) {
@@ -1662,6 +1623,57 @@ function CvVersions() {
   useEffect(() => {
     setDraft(selected ? stringifyCv(selected.json) : "");
   }, [selected?.id, selected?.json]);
+
+  const submitFiles = async (selectedFiles: File[], origin: "files" | "folder") => {
+    if (!selectedFiles.length) return;
+    setIsUploading(true);
+    setUploadStatus(`Uploading ${selectedFiles.length} file(s)…`);
+    try {
+      const files = await Promise.all(
+        selectedFiles.map(async (file) => ({
+          name: file.name,
+          type: file.type,
+          contentBase64: await fileToBase64(file)
+        }))
+      );
+      const imported = await sendJson<CvVersion[]>("/api/cv/import-files", "POST", { files });
+      const word = imported.filter((version) => version.source?.toLowerCase().endsWith(".docx")).length;
+      setUploadStatus(`✓ Added ${imported.length} file(s) to your materials${word ? ` — ${word} Word file(s) kept for exact-format tailoring` : ""}.`);
+      if (origin === "files") {
+        setPickedFiles([]);
+        if (filesInputRef.current) filesInputRef.current.value = "";
+      } else {
+        setFolderFiles([]);
+        if (folderInputRef.current) folderInputRef.current.value = "";
+      }
+      await refresh();
+    } catch (error) {
+      setUploadStatus(error instanceof Error ? error.message : "File import failed");
+    } finally {
+      setIsUploading(false);
+    }
+  };
+
+  const savePastedInfo = async () => {
+    if (!pasteLabel.trim() || !pasteContent.trim()) return;
+    setIsSavingPaste(true);
+    setPasteStatus("Saving…");
+    try {
+      await sendJson("/api/cv/import", "POST", {
+        label: pasteLabel.trim(),
+        content: pasteContent,
+        source: "paste"
+      });
+      setPasteStatus(`Saved “${pasteLabel.trim()}” — added to your materials as evidence the AI can draw from.`);
+      setPasteLabel("");
+      setPasteContent("");
+      await refresh();
+    } catch (error) {
+      setPasteStatus(error instanceof Error ? error.message : "Could not save the pasted info");
+    } finally {
+      setIsSavingPaste(false);
+    }
+  };
 
   const saveVersion = async () => {
     if (!selected) return;
@@ -1678,10 +1690,10 @@ function CvVersions() {
 
   const setTemplate = async () => {
     if (!selected) return;
-    setSaveState("Selecting template");
+    setSaveState("Setting as your base CV…");
     try {
       await sendJson<CvVersion>("/api/cv/template", "PUT", { cvVersionId: selected.id });
-      setSaveState("Template selected");
+      setSaveState("This is now your base CV — see the Base CV page.");
       await template.refresh();
     } catch (error) {
       setSaveState(error instanceof Error ? error.message : "Template selection failed");
@@ -1703,7 +1715,7 @@ function CvVersions() {
   const isTemplate = (version: CvVersion) => template.data?.id === version.id;
   const roleOf = (version: CvVersion): { label: string; state: string } =>
     isTemplate(version)
-      ? { label: "Template", state: "online" }
+      ? { label: "Base CV / Template", state: "online" }
       : version.includeEvidence === false
         ? { label: "Excluded", state: "offline" }
         : { label: "Evidence", state: "warning" };
@@ -1711,40 +1723,105 @@ function CvVersions() {
 
   return (
     <>
-      <PageHeader title="CV Versions" description="One CV is the template (its design is used for your “My CV” output). Every other CV is evidence the AI draws on when tailoring." />
-      {template.data ? (
-        <section className="panel base-cv-hero">
-          <div className="hero-icon"><FileText size={26} /></div>
-          <div className="hero-main">
-            <p className="hero-eyebrow">Your Base CV</p>
-            <h2>{template.data.label}</h2>
-            <p className="hero-copy">This CV is the template — tailored CVs keep its structure. Everything below feeds in as supporting evidence.</p>
+      <PageHeader
+        title="My Materials"
+        description="Everything here is evidence — the AI pulls relevant facts from these when tailoring. Your Base CV (the format/template) lives on the Base CV page."
+      />
+      <div className="materials-top">
+        <section className="panel import-panel">
+          <div className="panel-header">
+            <h2>Add files</h2>
+            <span>PDF, DOCX, TXT, MD, JSON</span>
           </div>
-          <div className="hero-meta">
-            <span className={`hero-format ${template.data.assetType === "docx" ? "docx" : template.data.assetType === "pdf" ? "pdf" : "text"}`}>
-              {(template.data.assetType ?? "text").toUpperCase()}
-            </span>
-            <span className="hero-date">Added {formatDate(template.data.createdAt)}</span>
+          <p className="prep-intro">
+            Add CVs, certificates, reference letters, project docs — the AI pulls in whatever is relevant to each job when tailoring.
+          </p>
+          <div className="folder-import">
+            <div>
+              <strong>Upload files</strong>
+              <p>Pick one or more files (PDF, DOCX, TXT, MD, JSON).</p>
+            </div>
+            <input
+              ref={filesInputRef}
+              multiple
+              onChange={(event) => setPickedFiles(Array.from(event.target.files ?? []))}
+              type="file"
+              accept=".docx,.pdf,.json,.txt,.md"
+            />
+            <button className="button" onClick={() => void submitFiles(pickedFiles, "files")} type="button" disabled={!pickedFiles.length || isUploading}>
+              Upload Files
+            </button>
+          </div>
+          <div className="folder-import">
+            <div>
+              <strong>Or import a whole folder</strong>
+              <p>Choose a folder of CVs, certificates, and profile documents at once.</p>
+            </div>
+            <input
+              ref={folderInputRef}
+              multiple
+              onChange={(event) => setFolderFiles(Array.from(event.target.files ?? []))}
+              type="file"
+              webkitdirectory="true"
+            />
+            <button className="button" onClick={() => void submitFiles(folderFiles, "folder")} type="button" disabled={!folderFiles.length || isUploading}>
+              Import Folder
+            </button>
+          </div>
+          {isUploading || uploadStatus ? (
+            <p className={`upload-status ${isUploading ? "busy" : uploadStatus.startsWith("✓") ? "ok" : "err"}`} role="status">
+              {isUploading ? <Loader2 className="spin" size={15} /> : uploadStatus.startsWith("✓") ? <CheckCircle2 size={15} /> : <AlertTriangle size={15} />}
+              <span>{uploadStatus}</span>
+            </p>
+          ) : null}
+        </section>
+        <section className="panel paste-panel">
+          <div className="panel-header">
+            <h2>Paste text</h2>
+            <span>Quick evidence</span>
+          </div>
+          <p className="prep-intro">
+            Everything you paste here becomes <strong>evidence</strong> the AI can draw from when tailoring — projects, certificates, achievements, references, links. It’s only used where it’s relevant to a job.
+          </p>
+          <Field label="What is this? e.g. Projects at Siemens, IELTS certificate…">
+            <input
+              onChange={(event) => setPasteLabel(event.target.value)}
+              placeholder="Give it a short name"
+              type="text"
+              value={pasteLabel}
+            />
+          </Field>
+          <Field label="Content">
+            <textarea
+              className="paste-textarea"
+              onChange={(event) => setPasteContent(event.target.value)}
+              placeholder="Paste the details here — bullet points, full sentences, raw notes: all fine."
+              spellCheck={false}
+              value={pasteContent}
+            />
+          </Field>
+          <div className="form-footer">
+            <span>{pasteStatus}</span>
+            <button
+              className="button primary icon-button"
+              onClick={() => void savePastedInfo()}
+              type="button"
+              disabled={isSavingPaste || !pasteLabel.trim() || !pasteContent.trim()}
+            >
+              {isSavingPaste ? <Loader2 className="spin" size={17} /> : <ClipboardPaste size={17} />}
+              <span>{isSavingPaste ? "Saving…" : "Save pasted info"}</span>
+            </button>
           </div>
         </section>
-      ) : (
-        <section className="panel base-cv-hero empty">
-          <div className="hero-icon warn"><AlertTriangle size={24} /></div>
-          <div className="hero-main">
-            <p className="hero-eyebrow">Your Base CV</p>
-            <h2>No base CV chosen yet</h2>
-            <p className="hero-copy">Pick a CV below and press “Use as Template”. Tailored CVs will keep its structure — everything else feeds in as supporting evidence.</p>
-          </div>
-        </section>
-      )}
+      </div>
       <section className="split">
         <div className="panel version-list">
           <div className="panel-header">
-            <h2>Versions</h2>
+            <h2>Materials</h2>
             <span>{loading ? "Loading" : error ? "Offline" : `${data.length} total`}</span>
           </div>
-          <p className="evidence-note">Everything here except the base CV counts as <strong>evidence</strong> — the AI pulls in whatever is relevant to each job.</p>
-          {data.length === 0 ? <p className="empty-state">No CV versions imported yet.</p> : null}
+          <p className="evidence-note">Everything here except your base CV counts as <strong>evidence</strong> — the AI pulls in whatever is relevant to each job. Click an item to view or edit it.</p>
+          {data.length === 0 ? <p className="empty-state">Nothing here yet — upload files or paste text above.</p> : null}
           {data.map((version) => {
             const role = roleOf(version);
             return (
@@ -1768,7 +1845,7 @@ function CvVersions() {
         </div>
         <div className="panel editor-panel">
           <div className="panel-header">
-            <h2>{selected?.label ?? "No version selected"}</h2>
+            <h2>{selected?.label ?? "No material selected"}</h2>
             <div className="button-group">
               <IconButton icon={FilePenLine} label="Use as Template" onClick={() => void setTemplate()} disabled={!selected || selectedIsTemplate} />
               <IconButton icon={Save} label="Save Draft" onClick={() => void saveVersion()} disabled={!selected} />
@@ -1777,7 +1854,13 @@ function CvVersions() {
           {selected ? (
             <div className="role-bar">
               {selectedIsTemplate ? (
-                <p className="format-hint">This is your <strong>active template</strong>. Its content and design are the base for tailored CVs.</p>
+                <div className="template-hint-row">
+                  <p className="format-hint">This is your <strong>Base CV / Template</strong> — tailored CVs keep its structure and design.</p>
+                  <button className="button ghost icon-button small" onClick={onGoToBaseCv} type="button">
+                    <FileText size={14} />
+                    <span>Open Base CV page</span>
+                  </button>
+                </div>
               ) : (
                 <label className="toggle-row">
                   <input
@@ -1785,7 +1868,7 @@ function CvVersions() {
                     checked={selected.includeEvidence !== false}
                     onChange={(event) => void toggleEvidence(event.target.checked)}
                   />
-                  <span>Use this CV as <strong>evidence</strong> when tailoring (the AI pulls in relevant facts from it)</span>
+                  <span>Use this as <strong>evidence</strong> when tailoring (the AI pulls in relevant facts from it)</span>
                 </label>
               )}
             </div>

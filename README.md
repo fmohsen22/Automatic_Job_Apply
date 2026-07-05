@@ -111,8 +111,8 @@ npm run local
 ### After it opens (http://127.0.0.1:4173)
 
 1. **Settings** → paste your **OpenRouter** and **Tavily** keys → Save.
-2. **Base CV** → upload your CV (upload a Word `.docx` for exact-format output; PDF also works). Optionally add a photo.
-3. **CV Versions** → mark your CV as the **Template**.
+2. **Base CV** → upload your one main CV (a Word `.docx` keeps your exact layout; PDF also works). It is saved and set as your template automatically — the page confirms "This is your base CV". Optionally add a photo.
+3. **My Materials** → add everything else: certificates, other CVs, reference letters, and pasted text/personal info. All of it becomes evidence the AI can draw from.
 4. **Job Search** → describe what you want in plain language and search — or use **Found a job yourself?** to add a job by **link, pasted text, or an uploaded PDF / Word doc / screenshot** (handy for login-only sites).
 5. Open a job → pick a template → **Generate Materials** → download Word / PDF.
 
@@ -146,36 +146,26 @@ Do not paste real API keys into chat or commit them to git. Use the Settings UI 
 
 ## Recommended Workflow
 
-### 1. Import Your Materials
+### 1. Set Your Base CV
 
-Go to `Base CV`.
+Go to `Base CV` and upload your one main CV (Word `.docx` recommended so tailored CVs keep your exact layout; PDF works too).
 
-You can import:
+It is saved and **set as your template automatically** — the page always shows a card confirming which CV is your base. Uploading a new file replaces it (the old one stays in My Materials as evidence). This is also where your profile photo lives.
 
-- PDF CVs
-- Word/DOCX CVs
-- JSON CVs
+### 2. Add Everything Else in My Materials
+
+Go to `My Materials` — the one place for all supporting input:
+
+- PDF / Word / JSON CVs
 - TXT/MD notes
 - certificates
 - project descriptions
 - detailed personal experience notes
-- **pasted text** — use the "Paste text" card to type or paste anything (projects, certificates, achievements, references); it becomes evidence the AI can draw from
+- **pasted text** — use the "Paste text" card to type or paste anything (projects, certificates, achievements, references)
 
-Folder import stores every supported file, not just one CV.
+Folder import stores every supported file, not just one CV. Everything here is **evidence**: the AI pulls in whatever is relevant for each job when tailoring.
 
-You can add **several CVs**, but exactly **one** acts as the base/template for formatting — everything else is supporting evidence. Pick it on `CV Versions` ("Use as Template"); the page shows your current base CV in a card at the top.
-
-### 2. Select The CV Template
-
-Go to `CV Versions`.
-
-Choose the CV that should act as your template and click:
-
-```text
-Use as Template
-```
-
-This template is the base for all job-specific CV drafts. Other uploaded materials are used as supporting evidence.
+You can add several CVs, but exactly **one** (your Base CV) acts as the template for formatting. To promote a different CV, click `Use as Template` on it in My Materials — or just upload it on the Base CV page.
 
 ### 3. Search Jobs
 

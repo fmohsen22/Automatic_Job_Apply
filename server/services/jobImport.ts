@@ -1,6 +1,7 @@
 import pdfParse from "pdf-parse/lib/pdf-parse.js";
 import mammoth from "mammoth";
-import { createLlmClient } from "./llm.js";
+import { createLlmClient, runLlm } from "./llm.js";
+import { readSettings } from "./settings.js";
 import { extractLooseJson } from "../utils/llmJson.js";
 
 // Fetch a job posting the user found and extract title / company / description so
@@ -8,7 +9,7 @@ import { extractLooseJson } from "../utils/llmJson.js";
 // structured data), PDF postings, and LinkedIn (via its public guest endpoint —
 // public data only, no login). Applying still stays manual on LinkedIn.
 
-export type ExtractedJob = { title: string; company: string; description: string };
+export type ExtractedJob = { title: string; company: string; description: string; location?: string };
 
 const USER_AGENT =
   "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36";
@@ -44,8 +45,8 @@ export async function fetchJobPage(url: string, timeoutMs = 15000): Promise<Extr
       return { title: firstLineTitle(text) || companyFromHost(url), company: companyFromHost(url), description: text.slice(0, 8000) };
     }
 
-    const extracted = extractJobFromHtml(buffer.toString("utf8"), url);
-    if (!isReadable(extracted.description) || extracted.description.length < 40) return null;
+    const extracted = await extractJobFromHtml(buffer.toString("utf8"), url);
+    if (!extracted || !isReadable(extracted.description) || extracted.description.length < 40) return null;
     return extracted;
   } catch {
     return null;
@@ -160,7 +161,7 @@ export async function extractJobFromImage(imageBase64: string, mimeType: string,
   }
 }
 
-function extractJobFromHtml(html: string, url: string): ExtractedJob {
+export async function extractJobFromHtml(html: string, url: string): Promise<ExtractedJob | null> {
   // Prefer schema.org JobPosting structured data (clean title/company/description).
   const structured = jsonLdJob(html);
   const metaTitle = decode((metaTag(html, "og:title") || html.match(/<title[^>]*>([\s\S]*?)<\/title>/i)?.[1] || "").trim());
@@ -174,12 +175,135 @@ function extractJobFromHtml(html: string, url: string): ExtractedJob {
     };
   }
 
-  const body = htmlToText(html);
-  return {
+  // No structured data: strip page chrome (scripts, nav, icons, hidden elements),
+  // focus on the main content region, then tidy the resulting text.
+  const region = pickMainRegion(stripNonContent(html));
+  const text = cleanExtractedText(decode(htmlToText(region)));
+  const fallback: ExtractedJob = {
     title: metaTitle,
     company: metaCompany || companyFromHost(url),
-    description: normalize(decode(body)).slice(0, 8000)
+    description: text.slice(0, 8000)
   };
+  if (looksLikeJobDescription(text)) return fallback;
+
+  // Still doesn't read like a posting (SPA shells, listing hubs, icon soup):
+  // let a cheap model pull the real posting out of the cleaned text.
+  const fromLlm = await extractJobWithLlm(text);
+  if (fromLlm) {
+    return {
+      title: fromLlm.title || fallback.title,
+      company: fromLlm.company || fallback.company,
+      location: fromLlm.location,
+      description: fromLlm.description
+    };
+  }
+  return fallback;
+}
+
+// Remove markup that never contains posting content. Scripts are the critical one:
+// e.g. Google careers pages embed dozens of OTHER jobs inside AF_initDataCallback
+// blobs, which must not leak into the extracted description.
+function stripNonContent(html: string): string {
+  return html
+    .replace(/<script[\s\S]*?<\/script>/gi, " ")
+    .replace(/<style[\s\S]*?<\/style>/gi, " ")
+    .replace(/<noscript[\s\S]*?<\/noscript>/gi, " ")
+    .replace(/<svg[\s\S]*?<\/svg>/gi, " ")
+    .replace(/<template[\s\S]*?<\/template>/gi, " ")
+    .replace(/<nav\b[\s\S]*?<\/nav>/gi, " ")
+    .replace(/<header\b[\s\S]*?<\/header>/gi, " ")
+    .replace(/<footer\b[\s\S]*?<\/footer>/gi, " ")
+    .replace(/<aside\b[\s\S]*?<\/aside>/gi, " ")
+    // aria-hidden elements are decorative (icon ligatures like "work_outline").
+    // Matching open→first same-name close is safe for the flat elements icons use.
+    .replace(/<([a-z][a-z0-9]*)\b[^>]*\baria-hidden\s*=\s*["']?true["']?[^>]*>[\s\S]*?<\/\1>/gi, " ");
+}
+
+// Prefer the page's main content region when one is identifiable.
+function pickMainRegion(html: string): string {
+  const candidates = [
+    html.match(/<main\b[^>]*>([\s\S]*?)<\/main>/i)?.[1],
+    html.match(/<([a-z][a-z0-9]*)\b[^>]*\brole=["']main["'][^>]*>([\s\S]*)<\/\1>/i)?.[2],
+    html.match(/<article\b[^>]*>([\s\S]*?)<\/article>/i)?.[1]
+  ];
+  for (const candidate of candidates) {
+    if (candidate && candidate.replace(/<[^>]+>/g, " ").trim().length > 200) return candidate;
+  }
+  return html.match(/<body\b[^>]*>([\s\S]*)<\/body>/i)?.[1] ?? html;
+}
+
+// Leftover single-word icon ligature names (Material icons render as text once
+// the font is gone): "work_outline", "chevron_right", plus a few common bare ones.
+const ICON_WORDS = new Set(["menu", "close", "search", "share", "launch", "done", "info", "bookmark", "home", "expand", "add", "remove"]);
+
+function isIconJunkLine(line: string): boolean {
+  if (line.length > 40) return false;
+  const tokens = line.split(" ");
+  if (tokens.length > 4) return false;
+  return tokens.every((token) => /^[a-z][a-z0-9]*(?:_[a-z0-9]+)+$/.test(token) || ICON_WORDS.has(token.toLowerCase()));
+}
+
+// Tidy text extracted from arbitrary pages: collapse repeated words/lines
+// ("home home / Home Home" nav symptoms), drop icon junk, normalize whitespace.
+function cleanExtractedText(raw: string): string {
+  const out: string[] = [];
+  let prev = "";
+  for (const rawLine of raw.split("\n")) {
+    // Collapse immediate word repeats within a line ("home home" -> "home").
+    const line = rawLine.replace(/\s+/g, " ").trim().replace(/\b(\S{2,})(?: \1\b)+/g, "$1");
+    if (!line) {
+      if (out.length && out[out.length - 1] !== "") out.push("");
+      continue;
+    }
+    if (isIconJunkLine(line)) continue;
+    if (line === prev) continue;
+    out.push(line);
+    prev = line;
+  }
+  return out.join("\n").replace(/\n{3,}/g, "\n\n").trim();
+}
+
+// Heuristic: does the cleaned text plausibly contain an actual job description?
+function looksLikeJobDescription(text: string): boolean {
+  if (text.length < 400) return false;
+  if (!isReadable(text)) return false;
+  return /\b(qualifications|responsibilities|requirements|experience|about the|what you.?ll do|who you are)\b/i.test(text);
+}
+
+// Last resort for pages where DOM cleanup still leaves noise: have a cheap model
+// pull the posting out of the cleaned text. Extraction only — the model must not
+// invent content, and returns null when the text holds no job posting.
+async function extractJobWithLlm(text: string): Promise<ExtractedJob | null> {
+  const input = text.trim().slice(0, 12000);
+  if (input.length < 80) return null;
+  try {
+    const settings = await readSettings();
+    const response = await runLlm({
+      model: settings.searchModel || "google/gemini-2.5-flash-lite",
+      maxTokens: 4000,
+      messages: [
+        {
+          role: "system",
+          content:
+            'You extract a job posting from noisy text scraped from a web page. Return ONLY JSON: {"title": string, "company": string, "location": string, "description": string} or null. ' +
+            "Use text from the input verbatim (or faithfully condensed) — never invent or embellish details that are not in the input. " +
+            "description = the posting's real content (role summary, qualifications, responsibilities, benefits), excluding navigation/UI junk. " +
+            "Use an empty string for fields the text does not state. If the input contains no job posting, return null."
+        },
+        { role: "user", content: input }
+      ]
+    });
+    const parsed = extractLooseJson<{ title?: string; company?: string; location?: string; description?: string } | null>(response);
+    if (!parsed || typeof parsed !== "object" || !parsed.description || String(parsed.description).trim().length < 80) return null;
+    return {
+      title: String(parsed.title || "").trim(),
+      company: String(parsed.company || "").trim(),
+      location: String(parsed.location || "").trim() || undefined,
+      description: String(parsed.description).trim().slice(0, 8000)
+    };
+  } catch {
+    return null;
+  }
 }
 
 function jsonLdJob(html: string): ExtractedJob | null {
@@ -224,7 +348,8 @@ function htmlToText(html: string): string {
   return html
     .replace(/<script[\s\S]*?<\/script>/gi, " ")
     .replace(/<style[\s\S]*?<\/style>/gi, " ")
-    .replace(/<\/(p|div|li|br|h[1-6]|tr)>/gi, "\n")
+    .replace(/<br\s*\/?>/gi, "\n")
+    .replace(/<\/(p|div|li|br|h[1-6]|tr|ul|ol|section|table)>/gi, "\n")
     .replace(/<[^>]+>/g, " ");
 }
 

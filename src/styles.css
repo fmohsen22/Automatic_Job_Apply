@@ -2081,6 +2081,82 @@ pre {
   white-space: nowrap;
 }
 
+.hero-confirm {
+  align-items: center;
+  color: var(--ok);
+  display: flex;
+  font-size: 0.85rem;
+  font-weight: 650;
+  gap: 6px;
+  margin: 0 0 6px;
+}
+
+.upload-status {
+  align-items: center;
+  border-radius: var(--radius-sm);
+  display: flex;
+  font-size: 0.85rem;
+  gap: 8px;
+  line-height: 1.45;
+  margin: 0;
+  padding: 10px 12px;
+}
+
+.upload-status.ok {
+  background: var(--ok-bg);
+  color: var(--ok);
+  font-weight: 650;
+}
+
+.upload-status.err {
+  background: var(--danger-bg);
+  color: var(--danger);
+}
+
+.upload-status.busy {
+  background: var(--surface-3);
+  color: var(--text-2);
+}
+
+.upload-status svg {
+  flex-shrink: 0;
+}
+
+.pointer-panel {
+  display: grid;
+  gap: 12px;
+}
+
+.pointer-panel .panel-header,
+.pointer-panel .prep-intro {
+  margin-bottom: 0;
+}
+
+.pointer-panel .button {
+  justify-self: start;
+}
+
+.materials-top {
+  align-items: start;
+  display: grid;
+  gap: 16px;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  margin-bottom: 16px;
+}
+
+.template-hint-row {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  justify-content: space-between;
+}
+
+.template-hint-row .format-hint {
+  flex: 1 1 260px;
+  margin: 0;
+}
+
 .evidence-note {
   color: var(--text-3);
   font-size: 0.8rem;
@@ -2203,7 +2279,8 @@ pre {
 /* ---------- Responsive ---------- */
 
 @media (max-width: 1100px) {
-  .basecv-grid {
+  .basecv-grid,
+  .materials-top {
     grid-template-columns: 1fr;
   }
 }

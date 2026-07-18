@@ -117,6 +117,7 @@ type ModelPreset = {
     generalModel: string;
   };
   notes: string;
+  costs?: Array<{ label: string; value: string }>;
 };
 
 const MODEL_HELP: Record<ModelPurpose, string> = {
@@ -1511,6 +1512,7 @@ function SettingsPage() {
                 <p>
                   Researched combinations from cheapest to best — one click sets and saves all five models.
                   {presets?.updated ? ` Last researched: ${presets.updated}.` : ""}
+                  {" "}Cost estimates: one search scores ~50 found jobs; a CV + cover letter includes the automatic review + refine loop. Actual costs vary with CV and job-ad length.
                 </p>
               </div>
               <button className="button ghost" type="button" onClick={() => setPresetsOpen(false)}>✕</button>
@@ -1524,6 +1526,16 @@ function SettingsPage() {
                   <h3>{preset.name}</h3>
                   <p className="preset-tagline">{preset.tagline}</p>
                   <p className="preset-cost">{preset.estimatedCost}</p>
+                  {preset.costs?.length ? (
+                    <dl className="preset-costs">
+                      {preset.costs.map((row) => (
+                        <div key={row.label}>
+                          <dt>{row.label}</dt>
+                          <dd>{row.value}</dd>
+                        </div>
+                      ))}
+                    </dl>
+                  ) : null}
                   <ul className="preset-models">
                     <li><span>Search</span>{modelDisplayName(preset.models.searchModel)}</li>
                     <li><span>Tailor</span>{modelDisplayName(preset.models.tailorModel)}</li>

@@ -104,6 +104,34 @@ type OpenRouterModel = {
 
 type ModelPurpose = "search" | "tailor" | "review" | "apply" | "general";
 
+type ModelPreset = {
+  id: string;
+  name: string;
+  tagline: string;
+  estimatedCost: string;
+  models: {
+    searchModel: string;
+    tailorModel: string;
+    reviewModel: string;
+    applyModel: string;
+    generalModel: string;
+  };
+  notes: string;
+};
+
+const MODEL_HELP: Record<ModelPurpose, string> = {
+  search:
+    "Reads your search paragraph, builds the search queries, and scores every found job against your CV (the % fit). It runs dozens of times per search, so speed and a low price matter more than brilliance here.",
+  tailor:
+    "The writer. Rewrites your CV content for each job, writes the cover letter, and drafts the requirements checklist. This model has the biggest impact on the final quality — use your strongest one.",
+  review:
+    "The critic. Reads the tailor's draft, checks every claim against your real materials, and flags anything unsupported — the tailor then refines the draft. A cheap model from a DIFFERENT family than the tailor catches the most.",
+  apply:
+    "Assists the apply worker when auto-filling application forms (mapping your name, email, and CV to the right fields). Used briefly per application — a mid-range model is plenty.",
+  general:
+    "Everything else: extracting job ads from messy pages, reading screenshot uploads (needs a vision-capable model), and other utility tasks."
+};
+
 type Job = {
   id: string;
   source: string;
@@ -1247,6 +1275,9 @@ function SettingsPage() {
   const [saveState, setSaveState] = useState("");
   const [keySaveState, setKeySaveState] = useState("");
   const [openRouterTestState, setOpenRouterTestState] = useState("");
+  const [presetsOpen, setPresetsOpen] = useState(false);
+  const [presets, setPresets] = useState<{ updated: string; presets: ModelPreset[] } | null>(null);
+  const [presetState, setPresetState] = useState("");
   const openRouterModels = models.data.length
     ? models.data
     : [{ id: "anthropic/claude-sonnet-4.5", name: "Anthropic: Claude Sonnet 4.5", category: "tailor" as const }];
@@ -1284,6 +1315,37 @@ function SettingsPage() {
     } catch (saveError) {
       setSaveState(saveError instanceof Error ? saveError.message : "Save failed");
     }
+  };
+
+  const openPresets = async () => {
+    setPresetsOpen(true);
+    setPresetState("");
+    if (!presets) {
+      try {
+        setPresets(await fetchJson<{ updated: string; presets: ModelPreset[] }>("/api/models/presets"));
+      } catch {
+        setPresetState("Could not load presets — check that the API server is running.");
+      }
+    }
+  };
+
+  const applyPreset = async (preset: ModelPreset) => {
+    setPresetState(`Applying "${preset.name}"…`);
+    const next = { ...form, ...preset.models };
+    setForm(next);
+    try {
+      await sendJson("/api/settings", "PUT", next);
+      await refresh();
+      setSaveState(`Saved — "${preset.name}" combination is active.`);
+      setPresetsOpen(false);
+    } catch (applyError) {
+      setPresetState(applyError instanceof Error ? applyError.message : "Could not save the combination.");
+    }
+  };
+
+  const modelDisplayName = (id: string) => {
+    if (id === "codex") return "Codex — your ChatGPT plan";
+    return openRouterModels.find((model) => model.id === id)?.name ?? id;
   };
 
   const saveApiKeys = async () => {
@@ -1357,7 +1419,14 @@ function SettingsPage() {
             Already paying for ChatGPT? Pick <strong>Codex — your ChatGPT plan</strong> (top of each list) to use your subscription via the local Codex CLI instead of OpenRouter credit — or switch back and forth to compare results.
           </p>
         </div>
-        <Field label="Search Model">
+        <div className="preset-row">
+          <button className="button icon-button" type="button" onClick={() => void openPresets()}>
+            <WandSparkles size={17} />
+            <span>Set the best combination</span>
+          </button>
+          <span className="preset-row-hint">Pick a researched combination — cheapest to best — and all five models are set at once.</span>
+        </div>
+        <Field label="Search Model" help={MODEL_HELP.search}>
           <ModelSelect
             models={openRouterModels}
             purpose="search"
@@ -1365,7 +1434,7 @@ function SettingsPage() {
             onChange={(value) => setForm({ ...form, searchModel: value })}
           />
         </Field>
-        <Field label="Tailor Model (generates / updates the CV)">
+        <Field label="Tailor Model (generates / updates the CV)" help={MODEL_HELP.tailor}>
           <ModelSelect
             models={openRouterModels}
             purpose="tailor"
@@ -1373,7 +1442,7 @@ function SettingsPage() {
             onChange={(value) => setForm({ ...form, tailorModel: value })}
           />
         </Field>
-        <Field label="Review Model (critiques the draft → Tailor refines)">
+        <Field label="Review Model (critiques the draft → Tailor refines)" help={MODEL_HELP.review}>
           <ModelSelect
             models={openRouterModels}
             purpose="review"
@@ -1381,7 +1450,7 @@ function SettingsPage() {
             onChange={(value) => setForm({ ...form, reviewModel: value })}
           />
         </Field>
-        <Field label="Apply Model">
+        <Field label="Apply Model" help={MODEL_HELP.apply}>
           <ModelSelect
             models={openRouterModels}
             purpose="apply"
@@ -1389,7 +1458,7 @@ function SettingsPage() {
             onChange={(value) => setForm({ ...form, applyModel: value })}
           />
         </Field>
-        <Field label="General Model">
+        <Field label="General Model" help={MODEL_HELP.general}>
           <ModelSelect
             models={openRouterModels}
             purpose="general"
@@ -1433,6 +1502,48 @@ function SettingsPage() {
           <IconButton icon={Save} label="Save Settings" primary submit />
         </div>
       </form>
+      {presetsOpen ? (
+        <div className="modal-backdrop" onClick={() => setPresetsOpen(false)} role="dialog" aria-label="Model combinations">
+          <div className="preset-modal" onClick={(event) => event.stopPropagation()}>
+            <div className="preset-modal-head">
+              <div>
+                <h2>Pick a model combination</h2>
+                <p>
+                  Researched combinations from cheapest to best — one click sets and saves all five models.
+                  {presets?.updated ? ` Last researched: ${presets.updated}.` : ""}
+                </p>
+              </div>
+              <button className="button ghost" type="button" onClick={() => setPresetsOpen(false)}>✕</button>
+            </div>
+            {presetState ? <p className="preset-state">{presetState}</p> : null}
+            {!presets && !presetState ? <p className="preset-state">Loading combinations…</p> : null}
+            <div className="preset-grid">
+              {(presets?.presets ?? []).map((preset) => (
+                <div key={preset.id} className={preset.id === "balanced" ? "preset-card recommended" : "preset-card"}>
+                  {preset.id === "balanced" ? <span className="preset-flag">Recommended</span> : null}
+                  <h3>{preset.name}</h3>
+                  <p className="preset-tagline">{preset.tagline}</p>
+                  <p className="preset-cost">{preset.estimatedCost}</p>
+                  <ul className="preset-models">
+                    <li><span>Search</span>{modelDisplayName(preset.models.searchModel)}</li>
+                    <li><span>Tailor</span>{modelDisplayName(preset.models.tailorModel)}</li>
+                    <li><span>Review</span>{modelDisplayName(preset.models.reviewModel)}</li>
+                    <li><span>Apply</span>{modelDisplayName(preset.models.applyModel)}</li>
+                    <li><span>General</span>{modelDisplayName(preset.models.generalModel)}</li>
+                  </ul>
+                  <p className="preset-notes">{preset.notes}</p>
+                  <button className="button primary" type="button" onClick={() => void applyPreset(preset)}>
+                    Use this combination
+                  </button>
+                </div>
+              ))}
+            </div>
+            <p className="preset-footnote">
+              These combinations live in <code>server/config/model-presets.json</code> — edit that file after your own research and the list updates on the next open, no rebuild needed.
+            </p>
+          </div>
+        </div>
+      ) : null}
     </>
   );
 }
@@ -1923,10 +2034,18 @@ function AuditLog() {
   );
 }
 
-function Field({ label, children }: { label: string; children: React.ReactNode }) {
+function Field({ label, help, children }: { label: string; help?: string; children: React.ReactNode }) {
   return (
     <label className="field">
-      <span>{label}</span>
+      <span>
+        {label}
+        {help ? (
+          <span className="help-tip" tabIndex={0} aria-label={help}>
+            ?
+            <span className="help-tip-bubble" role="tooltip">{help}</span>
+          </span>
+        ) : null}
+      </span>
       {children}
     </label>
   );

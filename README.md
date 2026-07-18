@@ -142,6 +142,12 @@ Open `Settings`.
    - Review
    - General
 
+### Model combinations ("Set the best combination")
+
+Not sure which models to pick? Every model field has a **?** icon explaining exactly what that model does. The **Set the best combination** button opens researched presets — **Cheapest** (~$0.01–0.03/application), **Balanced** (recommended), **Best quality**, and **Your ChatGPT plan** ($0 extra via Codex) — and one click sets and saves all five models.
+
+The presets live in [`server/config/model-presets.json`](server/config/model-presets.json). When new models come out, re-research (prices are in the app's own `GET /api/models/openrouter`), edit that file, and bump its `updated` date — the app reads it fresh on every open, no rebuild needed.
+
 ### Using your ChatGPT plan instead of OpenRouter (optional)
 
 If you already pay for ChatGPT, every model dropdown has **Codex — your ChatGPT plan** pinned at the top. Picking it routes that step through the local [Codex CLI](https://github.com/openai/codex) using your existing subscription — no OpenRouter credit spent. You can also mix (e.g. Codex for tailoring, a cheap OpenRouter model for search) or switch back and forth to compare results.

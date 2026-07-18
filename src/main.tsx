@@ -97,6 +97,9 @@ type OpenRouterModel = {
   promptPrice?: string;
   completionPrice?: string;
   category: "search" | "tailor" | "apply" | "general";
+  local?: boolean;
+  available?: boolean;
+  unavailableReason?: string;
 };
 
 type ModelPurpose = "search" | "tailor" | "review" | "apply" | "general";
@@ -1349,7 +1352,10 @@ function SettingsPage() {
         </div>
         <div className="form-section">
           <h2>Model Routing</h2>
-          <p>Click a box and type to search all 341 OpenRouter models by name. Recommended: a cheap/fast model for search, Claude for tailoring, a cheap reviewer.</p>
+          <p>
+            Click a box and type to search all OpenRouter models by name. Recommended: a cheap/fast model for search, Claude for tailoring, a cheap reviewer.
+            Already paying for ChatGPT? Pick <strong>Codex — your ChatGPT plan</strong> (top of each list) to use your subscription via the local Codex CLI instead of OpenRouter credit — or switch back and forth to compare results.
+          </p>
         </div>
         <Field label="Search Model">
           <ModelSelect
@@ -1951,12 +1957,16 @@ function ModelSelect({
   }, []);
 
   const q = query.trim().toLowerCase();
+  // The local Codex option (user's ChatGPT plan) is pinned above the list.
+  const codex = models.find((model) => model.local);
+  const searchable = models.filter((model) => !model.local);
   // With a query, search across ALL models; with none, suggest role-relevant ones.
-  const base = q ? models : models.filter((model) => matchesPurpose(model, purpose));
+  const base = q ? searchable : searchable.filter((model) => matchesPurpose(model, purpose));
   const filtered = base
     .filter((model) => !q || [model.id, model.name, model.category].some((field) => field.toLowerCase().includes(q)))
     .sort((left, right) => compareModels(left, right, purpose))
     .slice(0, 80);
+  const showCodex = codex && (!q || "codex chatgpt openai plan subscription".includes(q) || codex.name.toLowerCase().includes(q));
 
   const pick = (id: string) => { onChange(id); setQuery(""); setOpen(false); };
 
@@ -1980,7 +1990,27 @@ function ModelSelect({
       <span className="model-combo-caret" aria-hidden>⌄</span>
       {open ? (
         <div className="model-combo-list">
-          {filtered.length === 0 ? <div className="model-combo-empty">No models match “{query}”.</div> : null}
+          {showCodex ? (
+            <button
+              type="button"
+              key={codex.id}
+              className={codex.id === value ? "model-combo-option codex selected" : "model-combo-option codex"}
+              onMouseDown={(event) => { event.preventDefault(); pick(codex.id); }}
+            >
+              <span className="mco-name">
+                {codex.name}
+                <span className={codex.available ? "mco-badge ok" : "mco-badge warn"}>
+                  {codex.available ? "No extra cost" : "Not detected"}
+                </span>
+              </span>
+              <span className="mco-id">
+                {codex.available
+                  ? "Runs locally via the Codex CLI — uses your ChatGPT subscription instead of OpenRouter credit."
+                  : codex.unavailableReason || "Install the Codex CLI and run `codex login`."}
+              </span>
+            </button>
+          ) : null}
+          {filtered.length === 0 && !showCodex ? <div className="model-combo-empty">No models match “{query}”.</div> : null}
           {filtered.map((model) => (
             <button
               type="button"

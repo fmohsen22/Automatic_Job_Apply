@@ -1,6 +1,10 @@
+import { writeFile, rm } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import pdfParse from "pdf-parse/lib/pdf-parse.js";
 import mammoth from "mammoth";
 import { createLlmClient, runLlm } from "./llm.js";
+import { isCodexModel, runCodex } from "./codexProvider.js";
 import { readSettings } from "./settings.js";
 import { extractLooseJson } from "../utils/llmJson.js";
 
@@ -126,6 +130,36 @@ export async function extractTextFromFile(buffer: Buffer, name: string, type: st
 // Read a job posting from an image (screenshot) using a vision-capable model.
 export async function extractJobFromImage(imageBase64: string, mimeType: string, model: string): Promise<ExtractedJob | null> {
   try {
+    // Codex CLI takes images as file attachments rather than data URLs.
+    if (isCodexModel(model)) {
+      const ext = (mimeType || "image/png").includes("jpeg") ? "jpg" : "png";
+      const imagePath = path.join(os.tmpdir(), `job-shot-${Date.now()}.${ext}`);
+      await writeFile(imagePath, Buffer.from(imageBase64, "base64"));
+      try {
+        const text = await runCodex(
+          [
+            {
+              role: "system",
+              content:
+                'You read a job posting from an image (often a screenshot). Return ONLY a JSON object: {"title": string, "company": string, "description": string}. ' +
+                "description = all readable job text (role summary, responsibilities, requirements, etc.). Transcribe faithfully; omit anything unreadable."
+            },
+            { role: "user", content: "Extract the job title, company, and full description from the attached image." }
+          ],
+          { responseFormat: "json", imagePaths: [imagePath] }
+        );
+        const parsedCodex = extractLooseJson<{ title?: string; company?: string; description?: string }>(text);
+        if (!parsedCodex || !parsedCodex.description || String(parsedCodex.description).trim().length < 20) return null;
+        return {
+          title: String(parsedCodex.title || "").trim(),
+          company: String(parsedCodex.company || "").trim(),
+          description: String(parsedCodex.description).slice(0, 8000)
+        };
+      } finally {
+        await rm(imagePath, { force: true }).catch(() => {});
+      }
+    }
+
     const client = await createLlmClient();
     const dataUrl = `data:${mimeType || "image/png"};base64,${imageBase64}`;
     const response = await client.chat.completions.create({

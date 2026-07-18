@@ -763,6 +763,42 @@ input[type="checkbox"] {
   padding: 12px;
 }
 
+/* Pinned local Codex option (user's ChatGPT plan) */
+.model-combo-option.codex {
+  background: linear-gradient(90deg, var(--teal-soft), transparent 70%);
+  border-bottom: 1px solid var(--border);
+}
+
+.model-combo-option.codex:hover,
+.model-combo-option.codex:focus {
+  background: var(--teal-soft);
+}
+
+.model-combo-option.codex.selected {
+  background: var(--accent-soft);
+}
+
+.mco-badge {
+  border-radius: 999px;
+  font-size: 0.66rem;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  margin-left: 8px;
+  padding: 2px 8px;
+  text-transform: uppercase;
+  vertical-align: 1px;
+}
+
+.mco-badge.ok {
+  background: var(--ok-bg);
+  color: var(--ok);
+}
+
+.mco-badge.warn {
+  background: var(--warn-bg);
+  color: var(--warn);
+}
+
 /* ---------- Form footer / status areas ---------- */
 
 .form-footer {

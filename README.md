@@ -139,8 +139,14 @@ Open `Settings`.
 6. Choose models for:
    - Search
    - Tailor
-   - Apply
+   - Review
    - General
+
+### Using your ChatGPT plan instead of OpenRouter (optional)
+
+If you already pay for ChatGPT, every model dropdown has **Codex — your ChatGPT plan** pinned at the top. Picking it routes that step through the local [Codex CLI](https://github.com/openai/codex) using your existing subscription — no OpenRouter credit spent. You can also mix (e.g. Codex for tailoring, a cheap OpenRouter model for search) or switch back and forth to compare results.
+
+Requirements: install the Codex CLI and log in once with `codex login`. The app detects it automatically and shows its status in the dropdown; if it isn't installed the option explains what to do. The CLI is run in a read-only sandbox against an empty temp folder, and your credentials never pass through the app.
 
 Do not paste real API keys into chat or commit them to git. Use the Settings UI or your local `.env`.
 

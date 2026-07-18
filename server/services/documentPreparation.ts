@@ -69,14 +69,6 @@ export async function prepareDocumentsForJob(jobId: string, instructions?: strin
   const baseCv = fromJsonString<Record<string, unknown>>(templateCv.json, {});
   const model = settings.tailorModel || "anthropic/claude-sonnet-4.5";
   const reviewModel = (settings.reviewModel || "").trim();
-  const supporting: SupportingMaterial[] = supportingMaterials
-    .filter((material) => material.id !== templateCv.id)
-    .slice(0, 12)
-    .map((material) => ({
-      label: material.label,
-      source: material.source,
-      content: fromJsonString(material.json, {})
-    }));
   const jobContext: JobContext = {
     title: job.title,
     company: job.company,
@@ -84,6 +76,17 @@ export async function prepareDocumentsForJob(jobId: string, instructions?: strin
     description: job.descr,
     url: job.url
   };
+  // Every material is considered: duplicates (same contentHash) collapse to the
+  // newest copy, and if the full set exceeds the prompt budget a cheap model
+  // reads ALL of them and ranks what matters for THIS job — nothing is dropped
+  // silently.
+  const materialSelection = await chooseSupportingMaterials(
+    supportingMaterials,
+    templateCv.id,
+    jobContext,
+    reviewModel || settings.searchModel || model
+  );
+  const supporting = materialSelection.supporting;
 
   // Output modes:
   //  - HTML gallery template  -> render structured content to HTML -> PDF
@@ -240,6 +243,8 @@ export async function prepareDocumentsForJob(jobId: string, instructions?: strin
       pdfRendered,
       templateCvVersionId: templateCv.id,
       supportingMaterialCount: supportingMaterials.length,
+      materialsUnique: materialSelection.total,
+      materialsUsed: materialSelection.used,
       checklistItems: checklist.length
     }
   });
@@ -855,6 +860,76 @@ async function readTemplateCv() {
     where: { NOT: { source: { startsWith: "tailored:" } } },
     orderBy: { createdAt: "desc" }
   });
+}
+
+// Prompt budget for supporting materials (chars of JSON). Everything fits for a
+// typical personal corpus; beyond it a cheap model ranks ALL materials by
+// relevance to the job and the budget is filled in that order.
+const MATERIALS_CHAR_BUDGET = 60_000;
+
+export async function chooseSupportingMaterials(
+  materials: Array<{ id: string; label: string; source: string | null; json: string; contentHash: string | null }>,
+  templateCvId: string,
+  job: JobContext,
+  cheapModel: string
+): Promise<{ supporting: SupportingMaterial[]; total: number; used: number }> {
+  const seen = new Set<string>();
+  const unique: Array<SupportingMaterial & { chars: number }> = [];
+  for (const material of materials) {
+    if (material.id === templateCvId) continue;
+    const hashKey = material.contentHash || `id:${material.id}`;
+    if (seen.has(hashKey)) continue; // duplicate upload — the newest copy is already in
+    seen.add(hashKey);
+    const content = fromJsonString(material.json, {});
+    unique.push({ label: material.label, source: material.source, content, chars: JSON.stringify(content).length });
+  }
+
+  const total = unique.length;
+  const strip = ({ label, source, content }: SupportingMaterial) => ({ label, source, content });
+  if (unique.reduce((sum, item) => sum + item.chars, 0) <= MATERIALS_CHAR_BUDGET) {
+    return { supporting: unique.map(strip), total, used: total };
+  }
+
+  let order = unique.map((_, index) => index);
+  try {
+    const listing = unique
+      .map((item, index) => `${index}. [${item.label}${item.source ? ` / ${item.source}` : ""}] ${JSON.stringify(item.content).slice(0, 400)}`)
+      .join("\n");
+    const response = await runLlm({
+      model: cheapModel,
+      responseFormat: "json",
+      messages: [
+        {
+          role: "system",
+          content:
+            'You rank a job candidate\'s materials by how useful they are for tailoring a CV to a specific job. Return ONLY a JSON object: {"order": number[]} — every material index exactly once, most relevant first.'
+        },
+        {
+          role: "user",
+          content: `JOB: ${job.title} at ${job.company}\n${job.description.slice(0, 3000)}\n\nMATERIALS:\n${listing}`
+        }
+      ]
+    });
+    const parsed = extractLooseJson<{ order?: number[] }>(response);
+    const valid = (parsed?.order || []).filter((n) => Number.isInteger(n) && n >= 0 && n < unique.length);
+    if (valid.length) {
+      const missing = order.filter((index) => !valid.includes(index));
+      order = [...new Set([...valid, ...missing])];
+    }
+  } catch {
+    // ranking is best-effort — newest-first fallback below still applies
+  }
+
+  const chosen: SupportingMaterial[] = [];
+  let budget = MATERIALS_CHAR_BUDGET;
+  for (const index of order) {
+    const item = unique[index];
+    if (item.chars <= budget) {
+      chosen.push(strip(item));
+      budget -= item.chars;
+    }
+  }
+  return { supporting: chosen, total, used: chosen.length };
 }
 
 async function readSupportingMaterials() {

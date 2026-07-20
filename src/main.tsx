@@ -346,7 +346,18 @@ function App() {
     <div className="app">
       <aside className="sidebar">
         <div className="brand">
-          <div className="brand-mark">S</div>
+          <div className="brand-mark">
+            <svg viewBox="0 0 24 24" width="26" height="26" fill="none" aria-hidden="true">
+              <path
+                d="M4 8.4 8 11.6 12 5.4 16 11.6 20 8.4 18.7 16.6 5.3 16.6Z"
+                fill="#ffffff"
+              />
+              <rect x="5.1" y="17.4" width="13.8" height="2.6" rx="1.3" fill="#ffffff" />
+              <circle cx="4" cy="7.3" r="1.5" fill="#ffe08a" />
+              <circle cx="12" cy="4.2" r="1.7" fill="#ffe08a" />
+              <circle cx="20" cy="7.3" r="1.5" fill="#ffe08a" />
+            </svg>
+          </div>
           <div>
             <strong>Sophie App</strong>
             <span>Your job-application assistant</span>

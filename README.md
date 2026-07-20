@@ -6,51 +6,37 @@ The app runs on your own computer. It stores data in local SQLite, encrypts save
 
 ---
 
-## 🍎 Setup on your Mac — for Sophie (just copy & paste)
+## 🍎 Setup on your Mac — for Sophie
 
-You don't need to understand any of this. Open the app called **Terminal** on your Mac (press `Cmd + Space`, type `Terminal`, hit Enter), then copy each block below and paste it into the black window and press **Enter**. Do them in order.
+You don't need to understand any of this. There are **two commands**, and a helper does the rest — it checks what your Mac needs and installs anything missing on its own.
 
-**Step 1 — Install the basics (Homebrew, Node, Git).** Paste this and press Enter. If it asks for your Mac password, type it (you won't see the letters — that's normal) and press Enter. This one can take a few minutes.
+Open the app called **Terminal** (press `Cmd + Space`, type `Terminal`, press Enter), then:
 
-```bash
-/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"; eval "$(/opt/homebrew/bin/brew shellenv 2>/dev/null || /usr/local/bin/brew shellenv)" && brew install node git
-```
-
-**Step 2 — Download Sophie App.**
+**1. Paste this line and press Enter** — it downloads Sophie App to your Desktop and starts the automatic setup:
 
 ```bash
-cd ~/Desktop && git clone https://github.com/fmohsen22/Automatic_Job_Apply.git sophie-app && cd sophie-app
+cd ~/Desktop && git clone https://github.com/fmohsen22/Automatic_Job_Apply.git sophie-app && cd sophie-app && bash scripts/setup-mac.sh
 ```
 
-**Step 3 — Install Sophie's parts** (this downloads what the app needs — takes a few minutes the first time).
+> The very first time, a small window may pop up saying *"install the command line developer tools?"* — click **Install**, wait for it to finish, then paste the same line again.
 
-```bash
-npm install && npx playwright install chromium
-```
+**2. Follow the prompts.** The helper installs everything (Homebrew, Node, the browser, and — if you say yes — LibreOffice), then asks *"Start Sophie App now?"* — press **Enter** for yes.
 
-**Step 4 — (Optional) Nice-to-have for one-click PDFs.**
+If it asks for your **Mac password**, type it (the letters stay hidden — that's normal) and press Enter. The first run takes a few minutes while it downloads things.
 
-```bash
-brew install --cask libreoffice
-```
-
-**Step 5 — Start Sophie.** This opens the app in your web browser automatically.
-
-```bash
-npm run local
-```
-
-That's it — Sophie App opens at **http://127.0.0.1:4173**. The first time you'll paste two free keys (see [First Setup](#first-setup) below). To **stop** the app, click the Terminal window and press `Ctrl + C`.
+That's it — Sophie App opens in your browser at **http://127.0.0.1:4173**. The first time you'll paste two free keys (see [First Setup](#first-setup) below). To **stop** the app, click the Terminal window and press `Ctrl + C`.
 
 ### Opening Sophie again next time
 
-Open Terminal and paste:
+Easiest: open the **`sophie-app`** folder on your Desktop and **double-click `run-mac.command`**.
+
+Or, in Terminal:
 
 ```bash
 cd ~/Desktop/sophie-app && npm run local
 ```
 
-> 💡 Tip: after Step 2 you can also just **double-click `run-mac.command`** inside the `sophie-app` folder on your Desktop to start it — no Terminal needed.
+> 💡 Want to re-check or repair the setup later? Double-click **`setup-mac.command`** in the `sophie-app` folder — it re-runs the automatic installer and skips anything already done.
 
 ---
 

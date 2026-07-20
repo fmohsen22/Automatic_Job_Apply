@@ -1,8 +1,58 @@
-# Automate JobApply
+# Sophie App
 
-Automate JobApply is a local AI workspace for searching jobs, ranking them against your experience, preparing tailored application documents, and tracking assisted application attempts.
+Sophie App is a local AI workspace for searching jobs, ranking them against your experience, preparing tailored application documents, and tracking assisted application attempts.
 
 The app runs on your own computer. It stores data in local SQLite, encrypts saved API keys, keeps an audit log, and uses explicit safety stops for risky application flows.
+
+---
+
+## 🍎 Setup on your Mac — for Sophie (just copy & paste)
+
+You don't need to understand any of this. Open the app called **Terminal** on your Mac (press `Cmd + Space`, type `Terminal`, hit Enter), then copy each block below and paste it into the black window and press **Enter**. Do them in order.
+
+**Step 1 — Install the basics (Homebrew, Node, Git).** Paste this and press Enter. If it asks for your Mac password, type it (you won't see the letters — that's normal) and press Enter. This one can take a few minutes.
+
+```bash
+/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"; eval "$(/opt/homebrew/bin/brew shellenv 2>/dev/null || /usr/local/bin/brew shellenv)" && brew install node git
+```
+
+**Step 2 — Download Sophie App.**
+
+```bash
+cd ~/Desktop && git clone https://github.com/fmohsen22/Automatic_Job_Apply.git sophie-app && cd sophie-app
+```
+
+**Step 3 — Install Sophie's parts** (this downloads what the app needs — takes a few minutes the first time).
+
+```bash
+npm install && npx playwright install chromium
+```
+
+**Step 4 — (Optional) Nice-to-have for one-click PDFs.**
+
+```bash
+brew install --cask libreoffice
+```
+
+**Step 5 — Start Sophie.** This opens the app in your web browser automatically.
+
+```bash
+npm run local
+```
+
+That's it — Sophie App opens at **http://127.0.0.1:4173**. The first time you'll paste two free keys (see [First Setup](#first-setup) below). To **stop** the app, click the Terminal window and press `Ctrl + C`.
+
+### Opening Sophie again next time
+
+Open Terminal and paste:
+
+```bash
+cd ~/Desktop/sophie-app && npm run local
+```
+
+> 💡 Tip: after Step 2 you can also just **double-click `run-mac.command`** inside the `sophie-app` folder on your Desktop to start it — no Terminal needed.
+
+---
 
 ## What It Does
 

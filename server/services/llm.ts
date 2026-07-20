@@ -30,7 +30,7 @@ export async function createLlmClient() {
     baseURL: "https://openrouter.ai/api/v1",
     defaultHeaders: {
       "HTTP-Referer": "http://127.0.0.1:4173",
-      "X-Title": "Automate JobApply"
+      "X-Title": "Sophie App"
     }
   });
 }

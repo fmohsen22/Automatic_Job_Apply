@@ -98,7 +98,7 @@ router.post("/test-openrouter", async (_req, res) => {
     headers: {
       Authorization: `Bearer ${apiKey}`,
       "HTTP-Referer": "http://127.0.0.1:4173",
-      "X-Title": "Automate JobApply"
+      "X-Title": "Sophie App"
     }
   });
   const text = await response.text();

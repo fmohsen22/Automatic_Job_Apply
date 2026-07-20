@@ -346,10 +346,10 @@ function App() {
     <div className="app">
       <aside className="sidebar">
         <div className="brand">
-          <div className="brand-mark">AJ</div>
+          <div className="brand-mark">S</div>
           <div>
-            <strong>Automate Job Apply</strong>
-            <span>M3 Preparation</span>
+            <strong>Sophie App</strong>
+            <span>Your job-application assistant</span>
           </div>
         </div>
         <nav aria-label="Primary navigation">

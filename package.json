@@ -22,6 +22,7 @@
   "dependencies": {
     "@prisma/client": "^5.22.0",
     "cors": "^2.8.5",
+    "docx": "^9.7.1",
     "dotenv": "^16.4.7",
     "express": "^4.21.2",
     "lucide-react": "^0.468.0",

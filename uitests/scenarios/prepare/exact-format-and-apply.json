@@ -1,22 +1,20 @@
 {
   "schemaVersion": 1,
   "id": "prepare-exact-format-and-apply",
-  "title": "Upload Word CV, tailor it in exact format, download Word/PDF, run apply worker",
+  "title": "Upload Word base CV (auto-set as template), tailor it in exact format, download Word/PDF, run apply worker",
   "feature": "prepare",
   "tags": ["e2e"],
   "steps": [
     { "description": "Open the app", "action": "goto", "value": "http://127.0.0.1:4173" },
 
     { "description": "Go to Base CV", "action": "click", "target": [{ "strategy": "role", "value": "button", "name": "Base CV" }] },
-    { "description": "Set version label", "action": "fill", "target": [{ "strategy": "role", "value": "textbox", "name": "Version Label" }, { "strategy": "css", "value": "form.import-panel input[type=text]" }], "value": "UITest Word CV" },
-    { "description": "Choose the Word CV file to upload", "action": "upload", "target": [{ "strategy": "css", "value": "form.import-panel input[type=file]" }], "value": "../../fixtures/sample_cv.docx" },
-    { "description": "Click Upload Files", "action": "click", "target": [{ "strategy": "role", "value": "button", "name": "Upload Files" }] },
-    { "description": "Word file is kept for exact-format tailoring", "action": "expect", "target": [{ "strategy": "text", "value": "Word file(s) kept for exact-format tailoring" }], "expect": { "type": "visible" }, "timeoutMs": 20000 },
+    { "description": "Upload the Word CV as the base CV", "action": "upload", "target": [{ "strategy": "css", "value": ".basecv-upload input[type=file]" }], "value": "../../fixtures/sample_cv.docx" },
+    { "description": "Base CV is saved and set as the template automatically", "action": "waitFor", "waitFor": { "text": "Base CV saved and set as your template", "state": "visible" }, "timeoutMs": 30000 },
 
-    { "description": "Go to CV Versions", "action": "click", "target": [{ "strategy": "role", "value": "button", "name": "CV Versions" }] },
-    { "description": "Select the uploaded Word CV", "action": "click", "target": [{ "strategy": "role", "value": "button", "name": "UITest Word CV" }, { "strategy": "text", "value": "UITest Word CV" }] },
-    { "description": "Set the Word CV as the active template", "action": "click", "target": [{ "strategy": "role", "value": "button", "name": "Use as Template" }] },
-    { "description": "Word CV is now the active template", "action": "waitFor", "waitFor": { "text": "This is your active template", "state": "visible" }, "timeoutMs": 15000 },
+    { "description": "Go to My Materials", "action": "click", "target": [{ "strategy": "role", "value": "button", "name": "My Materials" }] },
+    { "description": "Select the uploaded Word CV in the materials list", "action": "click", "target": [{ "strategy": "role", "value": "button", "name": "sample_cv" }, { "strategy": "text", "value": "sample_cv" }] },
+    { "description": "It is badged as the Base CV / Template", "action": "expect", "target": [{ "strategy": "text", "value": "Base CV / Template" }], "expect": { "type": "visible" } },
+    { "description": "Use as Template action exists for promoting materials", "action": "expect", "target": [{ "strategy": "role", "value": "button", "name": "Use as Template" }], "expect": { "type": "visible" } },
 
     { "description": "Go to Job Search", "action": "click", "target": [{ "strategy": "role", "value": "button", "name": "Job Search" }] },
     { "description": "Open the first ranked job", "action": "click", "target": [{ "strategy": "role", "value": "button", "name": "Review & Prepare" }] },

@@ -15,6 +15,7 @@ const SettingsSchema = z.object({
   defaultAutonomyLevel: z.enum(["L0", "L1", "L2"]).default("L1"),
   searchModel: z.string().optional(),
   tailorModel: z.string().optional(),
+  reviewModel: z.string().optional(),
   applyModel: z.string().optional(),
   generalModel: z.string().optional()
 });
@@ -57,8 +58,9 @@ router.put("/", async (req, res) => {
   const appSettings = {
     defaultCity: parsed.defaultCity || "",
     defaultAutonomyLevel: parsed.defaultAutonomyLevel,
-    searchModel: parsed.searchModel || "",
+    searchModel: parsed.searchModel || "x-ai/grok-4.3",
     tailorModel: parsed.tailorModel || "anthropic/claude-sonnet-4.5",
+    reviewModel: parsed.reviewModel || "",
     applyModel: parsed.applyModel || parsed.tailorModel || "anthropic/claude-sonnet-4.5",
     generalModel: parsed.generalModel || parsed.tailorModel || "anthropic/claude-sonnet-4.5"
   };
@@ -96,7 +98,7 @@ router.post("/test-openrouter", async (_req, res) => {
     headers: {
       Authorization: `Bearer ${apiKey}`,
       "HTTP-Referer": "http://127.0.0.1:4173",
-      "X-Title": "Automate JobApply"
+      "X-Title": "Sophie App"
     }
   });
   const text = await response.text();

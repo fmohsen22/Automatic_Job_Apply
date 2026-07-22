@@ -13,6 +13,7 @@ import { runLlm } from "./llm.js";
 import { makeSquareJpeg } from "./photo.js";
 import { readSettings } from "./settings.js";
 import { docxTemplatePath, getTemplate } from "./templates.js";
+import { buildDocxFromStructuredCv, buildDocxFromText } from "./wordExport.js";
 import { fromJsonString, toJsonString } from "../utils/json.js";
 import { extractLooseJson } from "../utils/llmJson.js";
 
@@ -67,14 +68,7 @@ export async function prepareDocumentsForJob(jobId: string, instructions?: strin
 
   const baseCv = fromJsonString<Record<string, unknown>>(templateCv.json, {});
   const model = settings.tailorModel || "anthropic/claude-sonnet-4.5";
-  const supporting: SupportingMaterial[] = supportingMaterials
-    .filter((material) => material.id !== templateCv.id)
-    .slice(0, 12)
-    .map((material) => ({
-      label: material.label,
-      source: material.source,
-      content: fromJsonString(material.json, {})
-    }));
+  const reviewModel = (settings.reviewModel || "").trim();
   const jobContext: JobContext = {
     title: job.title,
     company: job.company,
@@ -82,6 +76,17 @@ export async function prepareDocumentsForJob(jobId: string, instructions?: strin
     description: job.descr,
     url: job.url
   };
+  // Every material is considered: duplicates (same contentHash) collapse to the
+  // newest copy, and if the full set exceeds the prompt budget a cheap model
+  // reads ALL of them and ranks what matters for THIS job — nothing is dropped
+  // silently.
+  const materialSelection = await chooseSupportingMaterials(
+    supportingMaterials,
+    templateCv.id,
+    jobContext,
+    reviewModel || settings.searchModel || model
+  );
+  const supporting = materialSelection.supporting;
 
   // Output modes:
   //  - HTML gallery template  -> render structured content to HTML -> PDF
@@ -98,12 +103,14 @@ export async function prepareDocumentsForJob(jobId: string, instructions?: strin
   let checklist: ChecklistItem[];
   let tailoredDocx: Buffer | null = null;
   let templateHtml: string | null = null;
+  let structuredCv: StructuredCv | null = null;
   let formatMode: string;
   const usedTemplateId = gallery?.id ?? null;
 
   if (gallery?.kind === "html") {
-    const result = await generateTemplateCv({ model, baseCv, supportingMaterials: supporting, job: jobContext, instructions });
+    const result = await generateTemplateCv({ model, reviewModel, baseCv, supportingMaterials: supporting, job: jobContext, instructions });
     templateHtml = gallery.render(result.cv);
+    structuredCv = result.cv;
     tailoredCvJson = { ...(result.cv as unknown as Record<string, unknown>), rawText: flattenStructuredCv(result.cv) };
     coverLetter = result.coverLetter;
     checklist = result.checklist;
@@ -141,11 +148,20 @@ export async function prepareDocumentsForJob(jobId: string, instructions?: strin
     checklist = docx.checklist;
     formatMode = "docx";
   } else {
-    const generated = await generateDocuments({ model, baseCv, supportingMaterials: supporting, job: jobContext, instructions });
+    const generated = await generateDocuments({ model, reviewModel, baseCv, supportingMaterials: supporting, job: jobContext, instructions });
     tailoredCvJson = (generated.tailoredCv as Record<string, unknown>) ?? baseCv;
     coverLetter = generated.coverLetter || "";
     checklist = Array.isArray(generated.checklist) ? generated.checklist : [];
     formatMode = "text";
+    // Plain-text mode still gets an editable Word file built from the tailored text.
+    const cvText = typeof tailoredCvJson.rawText === "string" ? tailoredCvJson.rawText : "";
+    if (cvText.trim()) {
+      try {
+        tailoredDocx = await buildDocxFromText(cvText);
+      } catch {
+        tailoredDocx = null; // Never fail the whole preparation over the Word export.
+      }
+    }
   }
 
   const nextVersion = await nextCvVersion(`job:${job.id}`);
@@ -194,9 +210,19 @@ export async function prepareDocumentsForJob(jobId: string, instructions?: strin
     await writeStoredFile(cvHtmlPath, Buffer.from(templateHtml, "utf8"));
     const cvPdfPath = await renderHtmlToPdf(templateHtml, path.join(dir, "cv.pdf"));
     pdfRendered = Boolean(cvPdfPath);
+    // HTML-template mode also gets an editable Word version of the same content.
+    let cvDocxPath: string | null = null;
+    if (structuredCv) {
+      try {
+        cvDocxPath = path.join(dir, "cv.docx");
+        await writeStoredFile(cvDocxPath, await buildDocxFromStructuredCv(structuredCv));
+      } catch {
+        cvDocxPath = null; // Word export is best-effort; keep the HTML/PDF output.
+      }
+    }
     docSet = await prisma.docSet.update({
       where: { id: docSet.id },
-      data: { cvHtmlPath, cvPdfPath },
+      data: { cvHtmlPath, cvPdfPath, cvDocxPath },
       include: { cvVersion: true, job: true }
     });
   }
@@ -217,6 +243,8 @@ export async function prepareDocumentsForJob(jobId: string, instructions?: strin
       pdfRendered,
       templateCvVersionId: templateCv.id,
       supportingMaterialCount: supportingMaterials.length,
+      materialsUnique: materialSelection.total,
+      materialsUsed: materialSelection.used,
       checklistItems: checklist.length
     }
   });
@@ -291,7 +319,7 @@ async function generateTailoredDocx(input: {
         role: "system",
         content:
           "You tailor a candidate's existing CV to one job WITHOUT changing its layout.\n\n" +
-          "FAITHFULNESS (most important): Keep the candidate's real professional identity, headline, and career exactly as written. Do NOT rebrand them into a different profession or invent a new role title to match the job (for example, never relabel a petroleum / AI-automation engineer as a 'UI/UX Engineer'). Never invent or imply employers, job titles, degrees, dates, certificates, tools, skills, or experience the candidate does not already have in the materials. Prefer MINIMAL edits: only change wording where it genuinely surfaces existing, relevant strengths for this job. When in doubt, leave the segment unchanged.\n\n" +
+          "FAITHFULNESS (most important): Use ONLY facts present in the CV segments and supporting materials. Keep the candidate's real professional identity, headline, and career exactly as written. Do NOT rebrand them into a different profession or invent a new role title to match the job (for example, never relabel a petroleum / AI-automation engineer as a 'UI/UX Engineer'). NEVER invent or imply employers, job titles, dates, degrees, certificates, tools, skills, metrics, or achievements the candidate does not already have in the materials. Rephrasing, reordering, and emphasizing REAL facts is allowed; fabricating is not. If the job requires something the candidate lacks, record it in the checklist as \"missing\" or \"address\" — never add it to the CV or cover letter. Prefer MINIMAL edits: only change wording where it genuinely surfaces existing, relevant strengths for this job. When in doubt, leave the segment unchanged.\n\n" +
           "The CV is given as numbered text segments (one per paragraph). Rewrite ONLY the wording of segments that should better match the job. Keep each rewritten segment roughly the same length and on a SINGLE line. Do not change the person's name, contact details, dates, or company names. If a segment should stay as-is, leave it out of your output.\n\n" +
           "Respond with EXACTLY these three sections, each starting with its marker on its own line, and nothing else:\n\n" +
           `${SEGMENTS_MARKER}\n` +
@@ -327,7 +355,7 @@ async function generateTailoredDocx(input: {
 const TEMPLATE_FILL_SYSTEM_PROMPT =
   "You fill a CV template with a candidate's real content, tailored to one job.\n\n" +
   "You are given the template as numbered SLOTS, each currently holding SAMPLE text (a fake person's details). For EACH slot, infer its purpose from the sample (name, job title, contact line, section heading, summary, a job entry, a bullet, a skill, education, etc.) and replace it with the CANDIDATE'S real, job-tailored content that fits that slot. Replace ALL sample names, contacts, companies and details with the candidate's real ones. Keep pure section HEADINGS (like 'Experience', 'Education', 'Skills') unchanged. Keep each slot's length similar to its sample so the layout still fits.\n\n" +
-  "FAITHFULNESS: Use only facts from the candidate's real CV and materials. Never invent employers, job titles, degrees, dates, certificates, tools, or skills. If the template has more slots than the candidate has real content, reuse or condense the candidate's real content sensibly — never fabricate. If a slot has no matching real content, use the closest real content or leave it unchanged.\n\n" +
+  "FAITHFULNESS (most important): Use ONLY facts from the candidate's real CV and supporting materials. NEVER invent employers, job titles, dates, degrees, certificates, tools, skills, metrics, or achievements. Rephrasing, reordering, and emphasizing REAL facts is allowed; fabricating is not. If the job requires something the candidate lacks, record it in the checklist as \"missing\" or \"address\" — never put it in the CV or cover letter. If the template has more slots than the candidate has real content, reuse or condense the candidate's real content sensibly — never fabricate. If a slot has no matching real content, use the closest real content or leave it unchanged.\n\n" +
   "Respond with EXACTLY these three sections, each starting with its marker on its own line:\n\n" +
   SEGMENTS_MARKER + "\n" +
   "One line per slot you fill, in the form: @@<number>@@ <new text>  (use the numbers shown; output a line for every slot that should change).\n\n" +
@@ -465,8 +493,8 @@ async function runLlmGuarded(request: Parameters<typeof runLlm>[0]) {
 
 const TEMPLATE_SYSTEM_PROMPT =
   "You convert a candidate's real CV into structured JSON and tailor it to one job.\n\n" +
-  "FAITHFULNESS (most important): Keep the candidate's real professional identity, role, employers, dates, and facts exactly. Do NOT rebrand them into a different profession or invent employers, titles, degrees, dates, certificates, tools, or skills. Only reorder and rephrase real content to emphasize what is most relevant to this job.\n" +
-  "STRICT — no new tools/skills: Do NOT add any tool, technology, framework, library, certification, or skill that is not LITERALLY written in the candidate's materials — not even closely related ones (e.g. do NOT add 'Anthropic' just because 'OpenAI' is present; do NOT add 'Terraform', 'AWS', 'Kubernetes', or '-ready'/'-capable'/'-friendly' qualifiers). Copy skill names and tech-stack items verbatim from the source; never expand, infer, round up, or pad a list. The same rule applies to the summary, headline, and stats. If a job wants a tool the candidate lacks, put it in the checklist as 'missing' — never in the CV.\n\n" +
+  "FAITHFULNESS (most important): Use ONLY facts present in the candidate's CV and supporting materials. Keep the candidate's real professional identity, role, employers, dates, and facts exactly. Do NOT rebrand them into a different profession or invent employers, titles, dates, degrees, certificates, tools, skills, metrics, or achievements. Reordering and rephrasing real content to emphasize what is most relevant to this job is allowed; fabricating is not.\n" +
+  "STRICT — no new tools/skills: Do NOT add any tool, technology, framework, library, certification, or skill that is not LITERALLY written in the candidate's materials — not even closely related ones (e.g. do NOT add 'Anthropic' just because 'OpenAI' is present; do NOT add 'Terraform', 'AWS', 'Kubernetes', or '-ready'/'-capable'/'-friendly' qualifiers). Copy skill names and tech-stack items verbatim from the source; never expand, infer, round up, or pad a list. The same rule applies to the summary, headline, and stats. If the job requires a tool or qualification the candidate lacks, put it in the checklist as 'missing' or 'address' — never in the CV or cover letter.\n\n" +
   "Respond with EXACTLY these three sections, each starting with its marker on its own line, and nothing else:\n\n" +
   CV_JSON_MARKER + "\n" +
   "A single valid JSON object with this shape:\n" +
@@ -489,6 +517,7 @@ const TEMPLATE_SYSTEM_PROMPT =
 // as JSON) so the gallery template can render it.
 async function generateTemplateCv(input: {
   model: string;
+  reviewModel?: string;
   baseCv: unknown;
   supportingMaterials: SupportingMaterial[];
   job: JobContext;
@@ -525,7 +554,9 @@ async function generateTemplateCv(input: {
     ]
   });
 
-  return parseTemplateResponse(response, baseText);
+  const parsed = parseTemplateResponse(response, baseText);
+  const cv = await reviewAndRefineStructured(input.reviewModel || "", input.model, baseText, input.job, parsed.cv);
+  return { ...parsed, cv };
 }
 
 function parseTemplateResponse(response: string, baseText: string) {
@@ -551,6 +582,75 @@ function parseTemplateResponse(response: string, baseText: string) {
     coverLetter: stripFences(coverLetter),
     checklist: Array.isArray(checklist) ? checklist : []
   };
+}
+
+// --- Two-model refinement: a cheap reviewer critiques the draft, then the tailor
+// model improves it. Skipped when no (distinct) review model is configured. ---
+
+async function reviewCvDraft(reviewModel: string, baseText: string, jobDescription: string, tailoredText: string): Promise<string> {
+  try {
+    const response = await runLlm({
+      model: reviewModel,
+      responseFormat: "text",
+      maxTokens: 800,
+      messages: [
+        {
+          role: "system",
+          content:
+            "You are a sharp CV reviewer. Compare the candidate's ORIGINAL CV and the TAILORED CV against the JOB. " +
+            "Give 3-7 short, concrete improvement notes: stronger wording, better ordering, real relevant experience to surface, conciseness, and keywords from the job description. " +
+            "CRUCIAL — truthfulness check first: verify every employer, job title, date, degree, certificate, tool, skill, metric, and achievement in the TAILORED CV against the ORIGINAL CV. Flag each invented or unsupported claim on its own line starting with 'UNSUPPORTED:' and say to remove it. Rephrased or reordered real facts are fine; new facts are not. " +
+            "Bullet points only, no preamble. If it is already excellent and faithful, reply with exactly: OK."
+        },
+        { role: "user", content: JSON.stringify({ job: jobDescription.slice(0, 3000), originalCv: baseText.slice(0, 6000), tailoredCv: tailoredText.slice(0, 6000) }) }
+      ]
+    });
+    return response.trim();
+  } catch {
+    return "";
+  }
+}
+
+async function reviewAndRefineText(reviewModel: string, tailorModel: string, baseText: string, job: JobContext, tailoredText: string): Promise<string> {
+  if (!reviewModel || reviewModel === tailorModel || tailoredText.trim().length < 40) return tailoredText;
+  const critique = await reviewCvDraft(reviewModel, baseText, job.description, tailoredText);
+  if (!critique || /^ok\b/i.test(critique)) return tailoredText;
+  try {
+    const response = await runLlmGuarded({
+      model: tailorModel,
+      responseFormat: "text",
+      maxTokens: 8000,
+      messages: [
+        { role: "system", content: "Improve the TAILORED CV using the reviewer's notes. Use ONLY facts present in the ORIGINAL CV — never add employers, titles, dates, degrees, certificates, tools, skills, metrics, or achievements not in it. REMOVE anything the reviewer flagged as UNSUPPORTED, fabricated, or not backed by the ORIGINAL CV. Keep the same language, section order, headings, and overall structure. Return ONLY the improved CV as plain text — no commentary, no markers." },
+        { role: "user", content: `JOB: ${job.title} at ${job.company}\n${job.description.slice(0, 3000)}\n\nORIGINAL CV:\n${baseText.slice(0, 6000)}\n\nCURRENT TAILORED CV:\n${tailoredText}\n\nREVIEWER NOTES:\n${critique}` }
+      ]
+    });
+    const refined = stripFences(response);
+    return refined && refined.length >= tailoredText.length * 0.6 ? refined : tailoredText;
+  } catch {
+    return tailoredText;
+  }
+}
+
+async function reviewAndRefineStructured(reviewModel: string, tailorModel: string, baseText: string, job: JobContext, cv: StructuredCv): Promise<StructuredCv> {
+  if (!reviewModel || reviewModel === tailorModel) return cv;
+  const critique = await reviewCvDraft(reviewModel, baseText, job.description, flattenStructuredCv(cv));
+  if (!critique || /^ok\b/i.test(critique)) return cv;
+  try {
+    const response = await runLlmGuarded({
+      model: tailorModel,
+      responseFormat: "text",
+      maxTokens: 8000,
+      messages: [
+        { role: "system", content: "Improve this CV (a JSON object) using the reviewer's notes. Use ONLY facts present in the ORIGINAL CV — never add employers, titles, dates, degrees, certificates, tools, skills, metrics, or achievements not in it. REMOVE anything the reviewer flagged as UNSUPPORTED, fabricated, or not backed by the ORIGINAL CV. Keep the EXACT same JSON shape (same keys and section types). Return ONLY the improved JSON object, nothing else." },
+        { role: "user", content: `REVIEWER NOTES:\n${critique}\n\nORIGINAL CV:\n${baseText.slice(0, 6000)}\n\nCURRENT CV JSON:\n${JSON.stringify(cv)}` }
+      ]
+    });
+    const parsed = extractLooseJson<StructuredCv>(response);
+    return isStructuredCv(parsed) ? normalizeStructuredCv(parsed) : cv;
+  } catch {
+    return cv;
+  }
 }
 
 function normalizeStructuredCv(cv: StructuredCv): StructuredCv {
@@ -614,6 +714,7 @@ function toStringArray(value: unknown): string[] {
 
 async function generateDocuments(input: {
   model: string;
+  reviewModel?: string;
   baseCv: unknown;
   supportingMaterials: Array<{
     label: string;
@@ -643,7 +744,7 @@ async function generateDocuments(input: {
           role: "system",
           content:
             "You tailor job application materials for one candidate to one job.\n\n" +
-            "FAITHFULNESS (most important): Keep the candidate's real professional identity, headline, and career exactly as in baseCvTemplate. Do NOT rebrand them into a different profession or invent a new role title to match the job (for example, never relabel a petroleum / AI-automation engineer as a 'UI/UX Engineer'). Use only facts found in baseCvTemplate and supportingMaterials. Never invent or imply employers, job titles, degrees, dates, certificates, tools, skills, or experience the candidate does not already have. If the job needs something the candidate lacks, record it in the checklist with status \"missing\" or \"address\" — never add it to the CV or cover letter.\n\n" +
+            "FAITHFULNESS (most important): Use ONLY facts found in baseCvTemplate and supportingMaterials. Keep the candidate's real professional identity, headline, and career exactly as in baseCvTemplate. Do NOT rebrand them into a different profession or invent a new role title to match the job (for example, never relabel a petroleum / AI-automation engineer as a 'UI/UX Engineer'). NEVER invent or imply employers, job titles, dates, degrees, certificates, tools, skills, metrics, or achievements the candidate does not already have. Rephrasing, reordering, and emphasizing REAL facts is allowed; fabricating is not. If the job needs something the candidate lacks, record it in the checklist with status \"missing\" or \"address\" — never add it to the CV or cover letter.\n\n" +
             "Respond with EXACTLY these three sections, each starting with its marker on its own line, in this order, and nothing before, between, or after them except the section content:\n\n" +
             `${CV_MARKER}\n` +
             "The candidate's CV, keeping the SAME language, section order, headings, tone, wording style, professional identity, and overall layout as baseCvTemplate (if it has rawText, mirror that text's structure). Reorder and rephrase only to emphasize the candidate's REAL, existing achievements most relevant to this job. Make minimal changes; do not introduce a new persona. Output as plain text only.\n\n" +
@@ -664,7 +765,16 @@ async function generateDocuments(input: {
       ]
     });
 
-    return parsePreparationResponse(response, input.baseCv);
+    const parsed = parsePreparationResponse(response, input.baseCv);
+    const baseText = typeof (input.baseCv as { rawText?: unknown })?.rawText === "string"
+      ? (input.baseCv as { rawText: string }).rawText
+      : JSON.stringify(input.baseCv);
+    const currentText = String((parsed.tailoredCv as { rawText?: unknown })?.rawText ?? "");
+    const refinedText = await reviewAndRefineText(input.reviewModel || "", input.model, baseText, input.job, currentText);
+    if (refinedText !== currentText) {
+      parsed.tailoredCv = buildTailoredCv(input.baseCv, refinedText);
+    }
+    return parsed;
   } catch (error) {
     const message = error instanceof Error ? error.message : "Unknown AI generation error";
     if (/401|unauthorized|user not found|invalid api key/i.test(message)) {
@@ -750,6 +860,76 @@ async function readTemplateCv() {
     where: { NOT: { source: { startsWith: "tailored:" } } },
     orderBy: { createdAt: "desc" }
   });
+}
+
+// Prompt budget for supporting materials (chars of JSON). Everything fits for a
+// typical personal corpus; beyond it a cheap model ranks ALL materials by
+// relevance to the job and the budget is filled in that order.
+const MATERIALS_CHAR_BUDGET = 60_000;
+
+export async function chooseSupportingMaterials(
+  materials: Array<{ id: string; label: string; source: string | null; json: string; contentHash: string | null }>,
+  templateCvId: string,
+  job: JobContext,
+  cheapModel: string
+): Promise<{ supporting: SupportingMaterial[]; total: number; used: number }> {
+  const seen = new Set<string>();
+  const unique: Array<SupportingMaterial & { chars: number }> = [];
+  for (const material of materials) {
+    if (material.id === templateCvId) continue;
+    const hashKey = material.contentHash || `id:${material.id}`;
+    if (seen.has(hashKey)) continue; // duplicate upload — the newest copy is already in
+    seen.add(hashKey);
+    const content = fromJsonString(material.json, {});
+    unique.push({ label: material.label, source: material.source, content, chars: JSON.stringify(content).length });
+  }
+
+  const total = unique.length;
+  const strip = ({ label, source, content }: SupportingMaterial) => ({ label, source, content });
+  if (unique.reduce((sum, item) => sum + item.chars, 0) <= MATERIALS_CHAR_BUDGET) {
+    return { supporting: unique.map(strip), total, used: total };
+  }
+
+  let order = unique.map((_, index) => index);
+  try {
+    const listing = unique
+      .map((item, index) => `${index}. [${item.label}${item.source ? ` / ${item.source}` : ""}] ${JSON.stringify(item.content).slice(0, 400)}`)
+      .join("\n");
+    const response = await runLlm({
+      model: cheapModel,
+      responseFormat: "json",
+      messages: [
+        {
+          role: "system",
+          content:
+            'You rank a job candidate\'s materials by how useful they are for tailoring a CV to a specific job. Return ONLY a JSON object: {"order": number[]} — every material index exactly once, most relevant first.'
+        },
+        {
+          role: "user",
+          content: `JOB: ${job.title} at ${job.company}\n${job.description.slice(0, 3000)}\n\nMATERIALS:\n${listing}`
+        }
+      ]
+    });
+    const parsed = extractLooseJson<{ order?: number[] }>(response);
+    const valid = (parsed?.order || []).filter((n) => Number.isInteger(n) && n >= 0 && n < unique.length);
+    if (valid.length) {
+      const missing = order.filter((index) => !valid.includes(index));
+      order = [...new Set([...valid, ...missing])];
+    }
+  } catch {
+    // ranking is best-effort — newest-first fallback below still applies
+  }
+
+  const chosen: SupportingMaterial[] = [];
+  let budget = MATERIALS_CHAR_BUDGET;
+  for (const index of order) {
+    const item = unique[index];
+    if (item.chars <= budget) {
+      chosen.push(strip(item));
+      budget -= item.chars;
+    }
+  }
+  return { supporting: chosen, total, used: chosen.length };
 }
 
 async function readSupportingMaterials() {

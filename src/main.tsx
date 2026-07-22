@@ -1,16 +1,19 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import {
   AlertTriangle,
   ArrowLeft,
   CalendarX2,
+  Check,
   CheckCircle2,
   ClipboardList,
+  ClipboardPaste,
   Download,
   ExternalLink,
   FilePenLine,
   FileText,
   FileUp,
+  FolderOpen,
   Gauge,
   History,
   Loader2,
@@ -19,13 +22,16 @@ import {
   Save,
   Search,
   Settings as SettingsIcon,
+  ShieldCheck,
   WandSparkles,
-  XCircle
+  X,
+  XCircle,
+  ZoomIn
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import "./styles.css";
 
-type View = "dashboard" | "search" | "job-detail" | "settings" | "base-cv" | "versions" | "audit";
+type View = "dashboard" | "search" | "job-detail" | "settings" | "base-cv" | "materials" | "audit";
 type AutonomyLevel = "L0" | "L1" | "L2";
 type ApiState<T> = { data: T; loading: boolean; error: string | null };
 
@@ -53,6 +59,7 @@ type SettingsPayload = {
   defaultAutonomyLevel?: AutonomyLevel;
   searchModel?: string;
   tailorModel?: string;
+  reviewModel?: string;
   applyModel?: string;
   generalModel?: string;
   openrouterApiKeySet?: boolean;
@@ -90,6 +97,40 @@ type OpenRouterModel = {
   promptPrice?: string;
   completionPrice?: string;
   category: "search" | "tailor" | "apply" | "general";
+  local?: boolean;
+  available?: boolean;
+  unavailableReason?: string;
+};
+
+type ModelPurpose = "search" | "tailor" | "review" | "apply" | "general";
+
+type ModelPreset = {
+  id: string;
+  name: string;
+  tagline: string;
+  estimatedCost: string;
+  models: {
+    searchModel: string;
+    tailorModel: string;
+    reviewModel: string;
+    applyModel: string;
+    generalModel: string;
+  };
+  notes: string;
+  costs?: Array<{ label: string; value: string }>;
+};
+
+const MODEL_HELP: Record<ModelPurpose, string> = {
+  search:
+    "Reads your search paragraph, builds the search queries, and scores every found job against your CV (the % fit). It runs dozens of times per search, so speed and a low price matter more than brilliance here.",
+  tailor:
+    "The writer. Rewrites your CV content for each job, writes the cover letter, and drafts the requirements checklist. This model has the biggest impact on the final quality — use your strongest one.",
+  review:
+    "The critic. Reads the tailor's draft, checks every claim against your real materials, and flags anything unsupported — the tailor then refines the draft. A cheap model from a DIFFERENT family than the tailor catches the most.",
+  apply:
+    "Assists the apply worker when auto-filling application forms (mapping your name, email, and CV to the right fields). Used briefly per application — a mid-range model is plenty.",
+  general:
+    "Everything else: extracting job ads from messy pages, reading screenshot uploads (needs a vision-capable model), and other utility tasks."
 };
 
 type Job = {
@@ -140,7 +181,14 @@ type DocSet = {
   cvHtmlAvailable?: boolean;
 };
 
-type TemplateInfo = { id: string; name: string; description: string; kind: "html" | "docx"; needsPhoto?: boolean };
+type TemplateInfo = {
+  id: string;
+  name: string;
+  description: string;
+  kind: "html" | "docx";
+  needsPhoto?: boolean;
+  previewUrl?: string | null;
+};
 
 type ApplicationStep = {
   label: string;
@@ -168,13 +216,30 @@ const autonomyLabels: Record<AutonomyLevel, string> = {
   L2: "Full-auto"
 };
 
-const views: Array<{ id: View; label: string; icon: LucideIcon }> = [
-  { id: "dashboard", label: "Dashboard", icon: Gauge },
-  { id: "search", label: "Job Search", icon: Search },
-  { id: "settings", label: "Settings", icon: SettingsIcon },
-  { id: "base-cv", label: "Base CV", icon: FileUp },
-  { id: "versions", label: "CV Versions", icon: FilePenLine },
-  { id: "audit", label: "Audit Log", icon: History }
+type NavItem = { id: View; label: string; icon: LucideIcon };
+
+const navGroups: Array<{ title: string; items: NavItem[] }> = [
+  {
+    title: "Workflow",
+    items: [
+      { id: "dashboard", label: "Dashboard", icon: Gauge },
+      { id: "search", label: "Job Search", icon: Search }
+    ]
+  },
+  {
+    title: "Your Profile",
+    items: [
+      { id: "base-cv", label: "Base CV", icon: FileUp },
+      { id: "materials", label: "My Materials", icon: FolderOpen }
+    ]
+  },
+  {
+    title: "System",
+    items: [
+      { id: "settings", label: "Settings", icon: SettingsIcon },
+      { id: "audit", label: "Audit Log", icon: History }
+    ]
+  }
 ];
 
 const emptySummary: DashboardSummary = {
@@ -188,8 +253,9 @@ const emptySettings: SettingsPayload = {
   tavilyApiKey: "",
   defaultCity: "",
   defaultAutonomyLevel: "L1",
-  searchModel: "",
+  searchModel: "x-ai/grok-4.3",
   tailorModel: "anthropic/claude-sonnet-4.5",
+  reviewModel: "openai/gpt-5.4-mini",
   applyModel: "anthropic/claude-sonnet-4.5",
   generalModel: "anthropic/claude-sonnet-4.5"
 };
@@ -280,27 +346,45 @@ function App() {
     <div className="app">
       <aside className="sidebar">
         <div className="brand">
-          <div className="brand-mark">AJ</div>
+          <div className="brand-mark">
+            <svg viewBox="0 0 24 24" width="26" height="26" fill="none" aria-hidden="true">
+              <path
+                d="M4 8.4 8 11.6 12 5.4 16 11.6 20 8.4 18.7 16.6 5.3 16.6Z"
+                fill="#ffffff"
+              />
+              <rect x="5.1" y="17.4" width="13.8" height="2.6" rx="1.3" fill="#ffffff" />
+              <circle cx="4" cy="7.3" r="1.5" fill="#ffe08a" />
+              <circle cx="12" cy="4.2" r="1.7" fill="#ffe08a" />
+              <circle cx="20" cy="7.3" r="1.5" fill="#ffe08a" />
+            </svg>
+          </div>
           <div>
-            <strong>Automate Job Apply</strong>
-            <span>M3 Preparation</span>
+            <strong>Sophie App</strong>
+            <span>Your job-application assistant</span>
           </div>
         </div>
         <nav aria-label="Primary navigation">
-          {views.map((view) => {
-            const Icon = view.icon;
-            return (
-              <button
-                className={activeView === view.id ? "nav-item active" : "nav-item"}
-                key={view.id}
-                onClick={() => setActiveView(view.id)}
-                type="button"
-              >
-                <Icon size={18} />
-                {view.label}
-              </button>
-            );
-          })}
+          {navGroups.map((group) => (
+            <div className="nav-group" key={group.title}>
+              <span className="nav-group-title">{group.title}</span>
+              {group.items.map((view) => {
+                const Icon = view.icon;
+                const isActive =
+                  activeView === view.id || (view.id === "search" && activeView === "job-detail");
+                return (
+                  <button
+                    className={isActive ? "nav-item active" : "nav-item"}
+                    key={view.id}
+                    onClick={() => setActiveView(view.id)}
+                    type="button"
+                  >
+                    <Icon size={18} />
+                    {view.label}
+                  </button>
+                );
+              })}
+            </div>
+          ))}
         </nav>
       </aside>
 
@@ -314,8 +398,8 @@ function App() {
           />
         )}
         {activeView === "settings" && <SettingsPage />}
-        {activeView === "base-cv" && <BaseCvImport />}
-        {activeView === "versions" && <CvVersions />}
+        {activeView === "base-cv" && <BaseCvPage onGoToMaterials={() => setActiveView("materials")} />}
+        {activeView === "materials" && <MyMaterials onGoToBaseCv={() => setActiveView("base-cv")} />}
         {activeView === "audit" && <AuditLog />}
       </main>
     </div>
@@ -337,6 +421,7 @@ function JobSearch({ onOpenJob }: { onOpenJob: (jobId: string) => void }) {
   const [addTitle, setAddTitle] = useState("");
   const [addCompany, setAddCompany] = useState("");
   const [addDescription, setAddDescription] = useState("");
+  const [addFile, setAddFile] = useState<File | null>(null);
   const [isAdding, setIsAdding] = useState(false);
   const [addStatus, setAddStatus] = useState("");
   const [hideGated, setHideGated] = useState(() => {
@@ -378,21 +463,26 @@ function JobSearch({ onOpenJob }: { onOpenJob: (jobId: string) => void }) {
 
   const addJob = async (event: React.FormEvent) => {
     event.preventDefault();
-    if (!addUrl.trim() && !addDescription.trim()) return;
+    if (!addUrl.trim() && !addDescription.trim() && !addFile) return;
     setIsAdding(true);
-    setAddStatus("Reading the job and scoring fit…");
+    setAddStatus(addFile ? "Reading the file and scoring fit…" : "Reading the job and scoring fit…");
     try {
-      const job = await sendJson<Job>("/api/jobs", "POST", {
+      const payload: Record<string, unknown> = {
         url: addUrl.trim(),
         title: addTitle.trim(),
         company: addCompany.trim(),
         description: addDescription.trim()
-      });
+      };
+      if (addFile) {
+        payload.file = { name: addFile.name, type: addFile.type, contentBase64: await fileToBase64(addFile) };
+      }
+      const job = await sendJson<Job>("/api/jobs", "POST", payload);
       setAddStatus(`Added “${job.title}” (${job.fitScore}% fit) — opening it…`);
       setAddUrl("");
       setAddTitle("");
       setAddCompany("");
       setAddDescription("");
+      setAddFile(null);
       setHistoryJobs(null);
       setActiveRunId("");
       await jobs.refresh();
@@ -515,16 +605,23 @@ function JobSearch({ onOpenJob }: { onOpenJob: (jobId: string) => void }) {
             value={addDescription}
           />
         </Field>
+        <Field label="Or upload the job description — PDF, Word, or a screenshot (great for login-only sites)">
+          <input
+            type="file"
+            accept=".pdf,.docx,.txt,.md,image/*"
+            onChange={(event) => setAddFile(event.target.files?.[0] ?? null)}
+          />
+        </Field>
         <div className="form-footer">
           <span className={isAdding ? "loading-status" : ""}>
-            {addStatus || "We read the link (or your pasted text), score the fit, add it to the list, and open it for preparation."}
+            {addStatus || "Paste a link, paste text, or upload a PDF/Word/screenshot — we read it, score the fit, and open it for preparation."}
           </span>
           <IconButton
             icon={Plus}
             label={isAdding ? "Adding…" : "Add & Open"}
             primary
             submit
-            disabled={isAdding || (!addUrl.trim() && addDescription.trim().length < 20)}
+            disabled={isAdding || (!addUrl.trim() && !addFile && addDescription.trim().length < 20)}
           />
         </div>
       </form>
@@ -606,11 +703,22 @@ function JobDetail({ jobId, onBack }: { jobId: string; onBack: () => void }) {
   const [isPreparing, setIsPreparing] = useState(false);
   const [applyStatus, setApplyStatus] = useState("");
   const [isApplying, setIsApplying] = useState(false);
+  const [lightbox, setLightbox] = useState<{ src: string; name: string } | null>(null);
+  const [brokenPreviews, setBrokenPreviews] = useState<Record<string, boolean>>({});
   const latestDocSet = data?.docSets?.[0];
   const latestRun = data?.runs?.[0];
   const templateIsDocx = template.data?.assetType === "docx";
 
   const selectedTemplate = templates.data.find((t) => t.id === format);
+
+  useEffect(() => {
+    if (!lightbox) return;
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setLightbox(null);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [lightbox]);
 
   useEffect(() => {
     // Wait until both the template CV and the gallery list have loaded, then
@@ -704,9 +812,10 @@ function JobDetail({ jobId, onBack }: { jobId: string; onBack: () => void }) {
                 </div>
               )}
             </div>
-            <div className="field">
+            <div className="field format-field">
               <span>Output format / template</span>
               <select
+                className="sr-select"
                 aria-label="Output format"
                 value={format}
                 onChange={(event) => setFormat(event.target.value)}
@@ -726,10 +835,100 @@ function JobDetail({ jobId, onBack }: { jobId: string; onBack: () => void }) {
                   <option value="text">Plain text</option>
                 </optgroup>
               </select>
+              <div className="template-gallery-scroll">
+              <div className="template-gallery">
+                {templateIsDocx ? (
+                  <button
+                    type="button"
+                    className={format === "word" ? "tg-card selected" : "tg-card"}
+                    aria-pressed={format === "word"}
+                    onClick={() => setFormat("word")}
+                    disabled={isPreparing}
+                  >
+                    <span className="tg-thumb">
+                      <span className="tg-ph own">
+                        <FileText size={26} />
+                        <em>Your .docx</em>
+                      </span>
+                    </span>
+                    <span className="tg-body">
+                      <strong>My CV — {template.data?.label}</strong>
+                      <span className="tg-desc">Your own Word file, rewritten in place — exact layout kept.</span>
+                      <span className="tg-badges">
+                        <span className="tg-badge">Editable Word + PDF</span>
+                      </span>
+                    </span>
+                    {format === "word" ? <span className="tg-check"><Check size={12} strokeWidth={3.2} /></span> : null}
+                  </button>
+                ) : null}
+                {templates.data.map((t) => {
+                  const preview = t.previewUrl && !brokenPreviews[t.id] ? t.previewUrl : null;
+                  return (
+                    <button
+                      type="button"
+                      key={t.id}
+                      className={format === t.id ? "tg-card selected" : "tg-card"}
+                      aria-pressed={format === t.id}
+                      onClick={() => setFormat(t.id)}
+                      disabled={isPreparing}
+                    >
+                      <span className="tg-thumb">
+                        {preview ? (
+                          <>
+                            <img
+                              src={preview}
+                              alt={`${t.name} template preview`}
+                              loading="lazy"
+                              onError={() => setBrokenPreviews((current) => ({ ...current, [t.id]: true }))}
+                              onClick={() => setLightbox({ src: preview, name: t.name })}
+                            />
+                            <span className="tg-zoom" aria-hidden="true"><ZoomIn size={13} /></span>
+                          </>
+                        ) : (
+                          <span className="tg-ph">
+                            <FileText size={26} />
+                            <em>{t.kind === "docx" ? "Word design" : "PDF design"}</em>
+                          </span>
+                        )}
+                      </span>
+                      <span className="tg-body">
+                        <strong>{t.name}</strong>
+                        <span className="tg-desc">{t.description}</span>
+                        <span className="tg-badges">
+                          <span className="tg-badge">Editable Word + PDF</span>
+                          {t.needsPhoto ? <span className="tg-badge photo">Photo</span> : null}
+                        </span>
+                      </span>
+                      {format === t.id ? <span className="tg-check"><Check size={12} strokeWidth={3.2} /></span> : null}
+                    </button>
+                  );
+                })}
+                <button
+                  type="button"
+                  className={format === "text" ? "tg-card selected" : "tg-card"}
+                  aria-pressed={format === "text"}
+                  onClick={() => setFormat("text")}
+                  disabled={isPreparing}
+                >
+                  <span className="tg-thumb">
+                    <span className="tg-ph plain">
+                      <ClipboardList size={26} />
+                      <em>No design</em>
+                    </span>
+                  </span>
+                  <span className="tg-body">
+                    <strong>Plain text</strong>
+                    <span className="tg-desc">Simple text output you can paste anywhere.</span>
+                    <span className="tg-badges">
+                      <span className="tg-badge">Editable Word</span>
+                    </span>
+                  </span>
+                  {format === "text" ? <span className="tg-check"><Check size={12} strokeWidth={3.2} /></span> : null}
+                </button>
+              </div>
+              </div>
               {format === "word" ? (
                 <p className="format-hint">Your uploaded Word CV, rewritten in place for this job — your exact layout is preserved.</p>
-              ) : selectedTemplate ? (
-                <p className="format-hint">{selectedTemplate.description}</p>
               ) : null}
               {!templateIsDocx ? (
                 <p className="format-hint photo">Want your <strong>own exact design</strong> as a template? Upload your CV as a Word <strong>.docx</strong> on the Base CV page — it then appears here as “My CV”. (A PDF can’t be reproduced exactly.)</p>
@@ -747,6 +946,10 @@ function JobDetail({ jobId, onBack }: { jobId: string; onBack: () => void }) {
                 disabled={isPreparing}
               />
             </Field>
+            <p className="assurance-note">
+              <ShieldCheck size={15} />
+              <span>Tailored CVs only use facts from your uploaded materials — the app never invents experience. Missing requirements show up in the checklist instead.</span>
+            </p>
             <button
               className="button primary prep-button"
               onClick={() => void prepare()}
@@ -830,7 +1033,7 @@ function JobDetail({ jobId, onBack }: { jobId: string; onBack: () => void }) {
                       {latestDocSet.cvDocxAvailable ? (
                         <a className="button primary icon-button small" href={`/api/docsets/${latestDocSet.id}/cv.docx`}>
                           <Download size={14} />
-                          <span>Word</span>
+                          <span>Download Word (editable)</span>
                         </a>
                       ) : null}
                       {latestDocSet.cvPdfAvailable ? (
@@ -840,7 +1043,7 @@ function JobDetail({ jobId, onBack }: { jobId: string; onBack: () => void }) {
                         </a>
                       ) : null}
                       <button
-                        className="button icon-button small"
+                        className="button ghost icon-button small"
                         onClick={() => downloadText(`${safeFileName(`${data.company}_${data.title}_CV`)}.txt`, stringifyCv(latestDocSet.cvVersion.json))}
                         type="button"
                       >
@@ -866,7 +1069,7 @@ function JobDetail({ jobId, onBack }: { jobId: string; onBack: () => void }) {
                     </div>
                     <div className="download-group">
                       <button
-                        className="button icon-button small"
+                        className="button ghost icon-button small"
                         onClick={() => downloadText(`${safeFileName(`${data.company}_${data.title}_CoverLetter`)}.txt`, latestDocSet.coverLetter || "")}
                         type="button"
                         disabled={!latestDocSet.coverLetter}
@@ -924,6 +1127,23 @@ function JobDetail({ jobId, onBack }: { jobId: string; onBack: () => void }) {
             </div>
           </div>
         </section>
+      ) : null}
+      {lightbox ? (
+        <div
+          className="lightbox"
+          role="dialog"
+          aria-modal="true"
+          aria-label={`${lightbox.name} template preview`}
+          onClick={() => setLightbox(null)}
+        >
+          <figure className="lightbox-body" onClick={(event) => event.stopPropagation()}>
+            <button type="button" className="lightbox-close" onClick={() => setLightbox(null)} aria-label="Close preview">
+              <X size={17} />
+            </button>
+            <img src={lightbox.src} alt={`${lightbox.name} template preview, enlarged`} />
+            <figcaption>{lightbox.name}</figcaption>
+          </figure>
+        </div>
       ) : null}
     </>
   );
@@ -1067,7 +1287,9 @@ function SettingsPage() {
   const [saveState, setSaveState] = useState("");
   const [keySaveState, setKeySaveState] = useState("");
   const [openRouterTestState, setOpenRouterTestState] = useState("");
-  const [modelQuery, setModelQuery] = useState("");
+  const [presetsOpen, setPresetsOpen] = useState(false);
+  const [presets, setPresets] = useState<{ updated: string; presets: ModelPreset[] } | null>(null);
+  const [presetState, setPresetState] = useState("");
   const openRouterModels = models.data.length
     ? models.data
     : [{ id: "anthropic/claude-sonnet-4.5", name: "Anthropic: Claude Sonnet 4.5", category: "tailor" as const }];
@@ -1087,6 +1309,7 @@ function SettingsPage() {
         const next: SettingsPayload = { ...current };
         if (!next.searchModel) next.searchModel = chooseModel(models.data, "search")?.id ?? next.searchModel;
         if (!next.tailorModel) next.tailorModel = chooseModel(models.data, "tailor")?.id ?? next.tailorModel;
+        if (!next.reviewModel) next.reviewModel = chooseModel(models.data, "review")?.id ?? next.reviewModel;
         if (!next.applyModel) next.applyModel = chooseModel(models.data, "apply")?.id ?? next.applyModel;
         if (!next.generalModel) next.generalModel = chooseModel(models.data, "general")?.id ?? next.generalModel;
         return next;
@@ -1104,6 +1327,37 @@ function SettingsPage() {
     } catch (saveError) {
       setSaveState(saveError instanceof Error ? saveError.message : "Save failed");
     }
+  };
+
+  const openPresets = async () => {
+    setPresetsOpen(true);
+    setPresetState("");
+    if (!presets) {
+      try {
+        setPresets(await fetchJson<{ updated: string; presets: ModelPreset[] }>("/api/models/presets"));
+      } catch {
+        setPresetState("Could not load presets — check that the API server is running.");
+      }
+    }
+  };
+
+  const applyPreset = async (preset: ModelPreset) => {
+    setPresetState(`Applying "${preset.name}"…`);
+    const next = { ...form, ...preset.models };
+    setForm(next);
+    try {
+      await sendJson("/api/settings", "PUT", next);
+      await refresh();
+      setSaveState(`Saved — "${preset.name}" combination is active.`);
+      setPresetsOpen(false);
+    } catch (applyError) {
+      setPresetState(applyError instanceof Error ? applyError.message : "Could not save the combination.");
+    }
+  };
+
+  const modelDisplayName = (id: string) => {
+    if (id === "codex") return "Codex — your ChatGPT plan";
+    return openRouterModels.find((model) => model.id === id)?.name ?? id;
   };
 
   const saveApiKeys = async () => {
@@ -1172,47 +1426,52 @@ function SettingsPage() {
         </div>
         <div className="form-section">
           <h2>Model Routing</h2>
-          <p>Recommended: fast OpenRouter models for search, Claude for tailoring and apply steps.</p>
+          <p>
+            Click a box and type to search all OpenRouter models by name. Recommended: a cheap/fast model for search, Claude for tailoring, a cheap reviewer.
+            Already paying for ChatGPT? Pick <strong>Codex — your ChatGPT plan</strong> (top of each list) to use your subscription via the local Codex CLI instead of OpenRouter credit — or switch back and forth to compare results.
+          </p>
         </div>
-        <label className="field">
-          <span>Filter Models</span>
-          <input
-            onChange={(event) => setModelQuery(event.target.value)}
-            placeholder="grok fast, claude, flash..."
-            type="text"
-            value={modelQuery}
-          />
-        </label>
-        <Field label="Search Model">
+        <div className="preset-row">
+          <button className="button icon-button" type="button" onClick={() => void openPresets()}>
+            <WandSparkles size={17} />
+            <span>Set the best combination</span>
+          </button>
+          <span className="preset-row-hint">Pick a researched combination — cheapest to best — and all five models are set at once.</span>
+        </div>
+        <Field label="Search Model" help={MODEL_HELP.search}>
           <ModelSelect
-            filter={modelQuery}
             models={openRouterModels}
             purpose="search"
             value={form.searchModel ?? ""}
             onChange={(value) => setForm({ ...form, searchModel: value })}
           />
         </Field>
-        <Field label="Tailor Model">
+        <Field label="Tailor Model (generates / updates the CV)" help={MODEL_HELP.tailor}>
           <ModelSelect
-            filter={modelQuery}
             models={openRouterModels}
             purpose="tailor"
             value={form.tailorModel ?? ""}
             onChange={(value) => setForm({ ...form, tailorModel: value })}
           />
         </Field>
-        <Field label="Apply Model">
+        <Field label="Review Model (critiques the draft → Tailor refines)" help={MODEL_HELP.review}>
           <ModelSelect
-            filter={modelQuery}
+            models={openRouterModels}
+            purpose="review"
+            value={form.reviewModel ?? ""}
+            onChange={(value) => setForm({ ...form, reviewModel: value })}
+          />
+        </Field>
+        <Field label="Apply Model" help={MODEL_HELP.apply}>
+          <ModelSelect
             models={openRouterModels}
             purpose="apply"
             value={form.applyModel ?? ""}
             onChange={(value) => setForm({ ...form, applyModel: value })}
           />
         </Field>
-        <Field label="General Model">
+        <Field label="General Model" help={MODEL_HELP.general}>
           <ModelSelect
-            filter={modelQuery}
             models={openRouterModels}
             purpose="general"
             value={form.generalModel ?? ""}
@@ -1255,20 +1514,95 @@ function SettingsPage() {
           <IconButton icon={Save} label="Save Settings" primary submit />
         </div>
       </form>
+      {presetsOpen ? (
+        <div className="modal-backdrop" onClick={() => setPresetsOpen(false)} role="dialog" aria-label="Model combinations">
+          <div className="preset-modal" onClick={(event) => event.stopPropagation()}>
+            <div className="preset-modal-head">
+              <div>
+                <h2>Pick a model combination</h2>
+                <p>
+                  Researched combinations from cheapest to best — one click sets and saves all five models.
+                  {presets?.updated ? ` Last researched: ${presets.updated}.` : ""}
+                  {" "}Cost estimates: one search scores ~50 found jobs; a CV + cover letter includes the automatic review + refine loop. Actual costs vary with CV and job-ad length.
+                </p>
+              </div>
+              <button className="button ghost" type="button" onClick={() => setPresetsOpen(false)}>✕</button>
+            </div>
+            {presetState ? <p className="preset-state">{presetState}</p> : null}
+            {!presets && !presetState ? <p className="preset-state">Loading combinations…</p> : null}
+            <div className="preset-grid">
+              {(presets?.presets ?? []).map((preset) => (
+                <div key={preset.id} className={preset.id === "balanced" ? "preset-card recommended" : "preset-card"}>
+                  {preset.id === "balanced" ? <span className="preset-flag">Recommended</span> : null}
+                  <h3>{preset.name}</h3>
+                  <p className="preset-tagline">{preset.tagline}</p>
+                  <p className="preset-cost">{preset.estimatedCost}</p>
+                  {preset.costs?.length ? (
+                    <dl className="preset-costs">
+                      {preset.costs.map((row) => (
+                        <div key={row.label}>
+                          <dt>{row.label}</dt>
+                          <dd>{row.value}</dd>
+                        </div>
+                      ))}
+                    </dl>
+                  ) : null}
+                  <ul className="preset-models">
+                    <li><span>Search</span>{modelDisplayName(preset.models.searchModel)}</li>
+                    <li><span>Tailor</span>{modelDisplayName(preset.models.tailorModel)}</li>
+                    <li><span>Review</span>{modelDisplayName(preset.models.reviewModel)}</li>
+                    <li><span>Apply</span>{modelDisplayName(preset.models.applyModel)}</li>
+                    <li><span>General</span>{modelDisplayName(preset.models.generalModel)}</li>
+                  </ul>
+                  <p className="preset-notes">{preset.notes}</p>
+                  <button className="button primary" type="button" onClick={() => void applyPreset(preset)}>
+                    Use this combination
+                  </button>
+                </div>
+              ))}
+            </div>
+            <p className="preset-footnote">
+              These combinations live in <code>server/config/model-presets.json</code> — edit that file after your own research and the list updates on the next open, no rebuild needed.
+            </p>
+          </div>
+        </div>
+      ) : null}
     </>
   );
 }
 
-function BaseCvImport() {
-  const [content, setContent] = useState("");
-  const [label, setLabel] = useState("Base CV");
-  const [mode, setMode] = useState<"text" | "json">("text");
-  const [status, setStatus] = useState("");
-  const [folderFiles, setFolderFiles] = useState<File[]>([]);
-  const [pickedFiles, setPickedFiles] = useState<File[]>([]);
+function BaseCvPage({ onGoToMaterials }: { onGoToMaterials: () => void }) {
+  const template = useApi<CvVersion | null>("/api/cv/template", null);
+  const [uploadState, setUploadState] = useState<"idle" | "uploading" | "saved" | "error">("idle");
+  const [uploadStatus, setUploadStatus] = useState("");
   const [photoStatus, setPhotoStatus] = useState("");
   const [photoVersion, setPhotoVersion] = useState(0);
   const [photoBroken, setPhotoBroken] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  const uploadBaseCv = async (file: File | undefined) => {
+    if (!file) return;
+    setUploadState("uploading");
+    setUploadStatus(`Uploading “${file.name}”…`);
+    try {
+      const imported = await sendJson<CvVersion[]>("/api/cv/import-files", "POST", {
+        files: [{ name: file.name, type: file.type, contentBase64: await fileToBase64(file) }]
+      });
+      const created = imported[0];
+      if (!created) {
+        throw new Error("The file could not be read. Upload a .docx or .pdf file.");
+      }
+      await sendJson<CvVersion>("/api/cv/template", "PUT", { cvVersionId: created.id });
+      await template.refresh();
+      setUploadState("saved");
+      setUploadStatus("Base CV saved and set as your template");
+    } catch (error) {
+      setUploadState("error");
+      setUploadStatus(error instanceof Error ? error.message : "Base CV upload failed");
+    } finally {
+      if (fileInputRef.current) fileInputRef.current.value = "";
+    }
+  };
 
   const uploadPhoto = async (file: File | undefined) => {
     if (!file) return;
@@ -1283,131 +1617,142 @@ function BaseCvImport() {
     }
   };
 
-  const importCv = async (event: React.FormEvent) => {
-    event.preventDefault();
-    setStatus("Importing");
-    try {
-      const parsedContent = mode === "json" ? JSON.parse(content) : content;
-      await sendJson("/api/cv", "POST", { label, source: "paste", content: parsedContent });
-      setStatus("Imported");
-    } catch (error) {
-      setStatus(error instanceof Error ? error.message : "Import failed");
-    }
-  };
-
-  const submitFiles = async (selected: File[], origin: string) => {
-    if (!selected.length) return;
-    setStatus(`Importing ${selected.length} ${origin}`);
-    try {
-      const files = await Promise.all(
-        selected.map(async (file) => ({
-          name: file.name,
-          type: file.type,
-          contentBase64: await fileToBase64(file)
-        }))
-      );
-      const imported = await sendJson<CvVersion[]>("/api/cv/import-files", "POST", {
-        label: selected.length === 1 ? label.trim() : undefined,
-        files
-      });
-      const word = imported.filter((version) => version.source?.toLowerCase().endsWith(".docx")).length;
-      setStatus(`Imported ${imported.length} file(s)${word ? ` — ${word} Word file(s) kept for exact-format tailoring` : ""}.`);
-    } catch (error) {
-      setStatus(error instanceof Error ? error.message : "File import failed");
-    }
-  };
+  const current = template.data;
 
   return (
     <>
-      <PageHeader title="Base CV Import" description="Upload CVs, certificates, profile notes, and evidence documents. Choose one CV as the template in CV Versions." />
-      <form className="panel import-panel" onSubmit={(event) => void importCv(event)}>
-        <p className="prep-intro">
-          One CV is your <strong>template</strong> (its design is used for the “My CV” output and to recreate it). Everything else you add here — extra experiences, certificates, links, project notes — becomes <strong>supporting evidence</strong>: the AI pulls in whatever is relevant to each job when tailoring, without dumping it all in. So feel free to paste lots of detail.
-        </p>
-        <Field label="Version Label">
-          <input onChange={(event) => setLabel(event.target.value)} type="text" value={label} />
-        </Field>
-        <div className="segmented" role="tablist" aria-label="Import format">
-          <button className={mode === "text" ? "selected" : ""} onClick={() => setMode("text")} type="button">
-            Text
-          </button>
-          <button className={mode === "json" ? "selected" : ""} onClick={() => setMode("json")} type="button">
-            JSON
-          </button>
-        </div>
-        <textarea
-          onChange={(event) => setContent(event.target.value)}
-          placeholder={mode === "json" ? "{ \"summary\": \"...\", \"experience\": [] }" : "Paste CV text, certificates, project notes, achievements, or detailed background information here"}
-          spellCheck={false}
-          value={content}
-        />
-        <div className="folder-import">
-          <div>
-            <strong>Upload CV / certificates (recommended)</strong>
-            <p>Pick one or more files. Upload your CV as <strong>Word (.docx)</strong> so tailored CVs keep your exact layout. PDF, DOCX, JSON, TXT, and MD are supported.</p>
+      <PageHeader
+        title="Base CV"
+        description="Your one main CV — tailored CVs are built on its design and content. Certificates, other CVs, and extra info live in My Materials."
+      />
+      {template.loading ? (
+        <section className="panel base-cv-hero">
+          <div className="hero-icon"><Loader2 className="spin" size={24} /></div>
+          <div className="hero-main">
+            <p className="hero-eyebrow">Your Base CV</p>
+            <h2>Checking your base CV…</h2>
           </div>
-          <input
-            multiple
-            onChange={(event) => setPickedFiles(Array.from(event.target.files ?? []))}
-            type="file"
-            accept=".docx,.pdf,.json,.txt,.md"
-          />
-          <button className="button" onClick={() => void submitFiles(pickedFiles, "files")} type="button" disabled={!pickedFiles.length}>
-            Upload Files
-          </button>
-        </div>
-        <div className="folder-import">
-          <div>
-            <strong>Folder import</strong>
-            <p>Or choose a whole folder of CVs, certificates, and profile documents at once.</p>
+        </section>
+      ) : current ? (
+        <section className="panel base-cv-hero">
+          <div className="hero-icon"><FileText size={26} /></div>
+          <div className="hero-main">
+            <p className="hero-eyebrow">Your Base CV</p>
+            <h2>{current.label}</h2>
+            <p className="hero-confirm">
+              <CheckCircle2 size={15} />
+              <span>{uploadState === "saved" ? "Base CV saved and set as your template" : "This is your base CV"}</span>
+            </p>
+            <p className="hero-copy">
+              Tailored CVs keep this file’s structure and design — only the content is rewritten for each job.
+            </p>
           </div>
-          <input
-            multiple
-            onChange={(event) => setFolderFiles(Array.from(event.target.files ?? []))}
-            type="file"
-            webkitdirectory="true"
-          />
-          <button className="button" onClick={() => void submitFiles(folderFiles, "folder files")} type="button" disabled={!folderFiles.length}>
-            Import Folder
-          </button>
-        </div>
-        <div className="form-footer">
-          <span>{status}</span>
-          <IconButton icon={FileUp} label="Import Base CV" primary submit disabled={!content.trim() || !label.trim()} />
-        </div>
-      </form>
-      <section className="panel photo-panel">
-        <div className="panel-header">
-          <h2>Profile Photo</h2>
-          <span>Used by photo templates</span>
-        </div>
-        <div className="photo-row">
-          <img
-            className="photo-thumb"
-            style={{ display: photoBroken ? "none" : "block" }}
-            src={`/api/cv/photo?v=${photoVersion}`}
-            alt="Profile"
-            onError={() => setPhotoBroken(true)}
-            onLoad={() => setPhotoBroken(false)}
-          />
-          <div className="photo-controls">
-            <p>Upload a headshot. Photo templates (e.g. <strong>Photo — Modern</strong>) will use it automatically; other templates ignore it. It’s cropped to a square.</p>
-            <input type="file" accept="image/*" onChange={(event) => void uploadPhoto(event.target.files?.[0])} />
-            <span className="subtle">{photoStatus}</span>
+          <div className="hero-meta">
+            <span className={`hero-format ${current.assetType === "docx" ? "docx" : current.assetType === "pdf" ? "pdf" : "text"}`}>
+              {(current.assetType ?? "text").toUpperCase()}
+            </span>
+            <span className="hero-date">Added {formatDate(current.createdAt)}</span>
           </div>
+        </section>
+      ) : (
+        <section className="panel base-cv-hero empty">
+          <div className="hero-icon warn"><AlertTriangle size={24} /></div>
+          <div className="hero-main">
+            <p className="hero-eyebrow">Your Base CV</p>
+            <h2>No base CV yet — upload it below</h2>
+            <p className="hero-copy">Upload your CV once and it becomes the base every tailored CV is built on.</p>
+          </div>
+        </section>
+      )}
+      <div className="basecv-grid">
+        <section className="panel import-panel basecv-upload">
+          <div className="panel-header">
+            <h2>{current ? "Replace your base CV" : "Upload your base CV"}</h2>
+            <span>Word .docx recommended</span>
+          </div>
+          <p className="prep-intro">
+            Upload your base CV — Word <strong>.docx</strong> recommended so tailored CVs keep your exact layout; PDF works too.
+            {current ? " Uploading a new file replaces your current base CV — the old one stays in My Materials as evidence." : ""}
+          </p>
+          <div className="folder-import">
+            <div>
+              <strong>Pick one file (.docx or .pdf)</strong>
+              <p>It is saved immediately and set as your base CV — no extra steps.</p>
+            </div>
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept=".docx,.pdf"
+              aria-label="Upload your base CV"
+              disabled={uploadState === "uploading"}
+              onChange={(event) => void uploadBaseCv(event.target.files?.[0])}
+            />
+          </div>
+          {uploadState !== "idle" ? (
+            <p className={`upload-status ${uploadState === "saved" ? "ok" : uploadState === "error" ? "err" : "busy"}`} role="status">
+              {uploadState === "uploading" ? <Loader2 className="spin" size={15} /> : uploadState === "saved" ? <CheckCircle2 size={15} /> : <AlertTriangle size={15} />}
+              <span>{uploadState === "saved" ? "✓ " : ""}{uploadStatus}</span>
+            </p>
+          ) : null}
+        </section>
+        <div className="basecv-side">
+          <section className="panel photo-panel">
+            <div className="panel-header">
+              <h2>Profile Photo</h2>
+              <span>Used by photo templates</span>
+            </div>
+            <div className="photo-row">
+              <img
+                className="photo-thumb"
+                style={{ display: photoBroken ? "none" : "block" }}
+                src={`/api/cv/photo?v=${photoVersion}`}
+                alt="Profile"
+                onError={() => setPhotoBroken(true)}
+                onLoad={() => setPhotoBroken(false)}
+              />
+              <div className="photo-controls">
+                <p>Upload a headshot. Photo templates (e.g. <strong>Photo — Modern</strong>) will use it automatically; other templates ignore it. It’s cropped to a square.</p>
+                <input type="file" accept="image/*" onChange={(event) => void uploadPhoto(event.target.files?.[0])} />
+                <span className="subtle">{photoStatus}</span>
+              </div>
+            </div>
+          </section>
+          <section className="panel pointer-panel">
+            <div className="panel-header">
+              <h2>Everything else</h2>
+              <span>Evidence for tailoring</span>
+            </div>
+            <p className="prep-intro">
+              Certificates, other CVs, reference letters, and extra info as text go to <strong>My Materials</strong> — the AI pulls relevant facts from them when tailoring each application.
+            </p>
+            <button className="button icon-button" onClick={onGoToMaterials} type="button">
+              <FolderOpen size={17} />
+              <span>Go to My Materials</span>
+            </button>
+          </section>
         </div>
-      </section>
+      </div>
     </>
   );
 }
 
-function CvVersions() {
+function MyMaterials({ onGoToBaseCv }: { onGoToBaseCv: () => void }) {
   const { data, loading, error, refresh } = useApi<CvVersion[]>("/api/cv", []);
   const template = useApi<CvVersion | null>("/api/cv/template", null);
   const [selectedId, setSelectedId] = useState("");
   const selected = useMemo(() => data.find((version) => version.id === selectedId) ?? data[0], [data, selectedId]);
   const [draft, setDraft] = useState("");
   const [saveState, setSaveState] = useState("");
+  const [pickedFiles, setPickedFiles] = useState<File[]>([]);
+  const [folderFiles, setFolderFiles] = useState<File[]>([]);
+  const [uploadStatus, setUploadStatus] = useState("");
+  const [isUploading, setIsUploading] = useState(false);
+  const [pasteLabel, setPasteLabel] = useState("");
+  const [pasteContent, setPasteContent] = useState("");
+  const [pasteStatus, setPasteStatus] = useState("");
+  const [isSavingPaste, setIsSavingPaste] = useState(false);
+  const filesInputRef = useRef<HTMLInputElement>(null);
+  const folderInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     if (!selectedId && data[0]) {
@@ -1418,6 +1763,57 @@ function CvVersions() {
   useEffect(() => {
     setDraft(selected ? stringifyCv(selected.json) : "");
   }, [selected?.id, selected?.json]);
+
+  const submitFiles = async (selectedFiles: File[], origin: "files" | "folder") => {
+    if (!selectedFiles.length) return;
+    setIsUploading(true);
+    setUploadStatus(`Uploading ${selectedFiles.length} file(s)…`);
+    try {
+      const files = await Promise.all(
+        selectedFiles.map(async (file) => ({
+          name: file.name,
+          type: file.type,
+          contentBase64: await fileToBase64(file)
+        }))
+      );
+      const imported = await sendJson<CvVersion[]>("/api/cv/import-files", "POST", { files });
+      const word = imported.filter((version) => version.source?.toLowerCase().endsWith(".docx")).length;
+      setUploadStatus(`✓ Added ${imported.length} file(s) to your materials${word ? ` — ${word} Word file(s) kept for exact-format tailoring` : ""}.`);
+      if (origin === "files") {
+        setPickedFiles([]);
+        if (filesInputRef.current) filesInputRef.current.value = "";
+      } else {
+        setFolderFiles([]);
+        if (folderInputRef.current) folderInputRef.current.value = "";
+      }
+      await refresh();
+    } catch (error) {
+      setUploadStatus(error instanceof Error ? error.message : "File import failed");
+    } finally {
+      setIsUploading(false);
+    }
+  };
+
+  const savePastedInfo = async () => {
+    if (!pasteLabel.trim() || !pasteContent.trim()) return;
+    setIsSavingPaste(true);
+    setPasteStatus("Saving…");
+    try {
+      await sendJson("/api/cv/import", "POST", {
+        label: pasteLabel.trim(),
+        content: pasteContent,
+        source: "paste"
+      });
+      setPasteStatus(`Saved “${pasteLabel.trim()}” — added to your materials as evidence the AI can draw from.`);
+      setPasteLabel("");
+      setPasteContent("");
+      await refresh();
+    } catch (error) {
+      setPasteStatus(error instanceof Error ? error.message : "Could not save the pasted info");
+    } finally {
+      setIsSavingPaste(false);
+    }
+  };
 
   const saveVersion = async () => {
     if (!selected) return;
@@ -1434,10 +1830,10 @@ function CvVersions() {
 
   const setTemplate = async () => {
     if (!selected) return;
-    setSaveState("Selecting template");
+    setSaveState("Setting as your base CV…");
     try {
       await sendJson<CvVersion>("/api/cv/template", "PUT", { cvVersionId: selected.id });
-      setSaveState("Template selected");
+      setSaveState("This is now your base CV — see the Base CV page.");
       await template.refresh();
     } catch (error) {
       setSaveState(error instanceof Error ? error.message : "Template selection failed");
@@ -1459,7 +1855,7 @@ function CvVersions() {
   const isTemplate = (version: CvVersion) => template.data?.id === version.id;
   const roleOf = (version: CvVersion): { label: string; state: string } =>
     isTemplate(version)
-      ? { label: "Template", state: "online" }
+      ? { label: "Base CV / Template", state: "online" }
       : version.includeEvidence === false
         ? { label: "Excluded", state: "offline" }
         : { label: "Evidence", state: "warning" };
@@ -1467,18 +1863,105 @@ function CvVersions() {
 
   return (
     <>
-      <PageHeader title="CV Versions" description="One CV is the template (its design is used for your “My CV” output). Every other CV is evidence the AI draws on when tailoring." />
-      <section className="status-strip">
-        <StatusPill state={template.data ? "online" : "warning"} label={template.data ? "Template" : "Missing"} />
-        <span>{template.data ? `“${template.data.label}” is the active template. Others are used as supporting evidence — toggle any off to exclude it from tailoring.` : "Select one uploaded CV as the template before preparing applications."}</span>
-      </section>
+      <PageHeader
+        title="My Materials"
+        description="Everything here is evidence — the AI pulls relevant facts from these when tailoring. Your Base CV (the format/template) lives on the Base CV page."
+      />
+      <div className="materials-top">
+        <section className="panel import-panel">
+          <div className="panel-header">
+            <h2>Add files</h2>
+            <span>PDF, DOCX, TXT, MD, JSON</span>
+          </div>
+          <p className="prep-intro">
+            Add CVs, certificates, reference letters, project docs — the AI pulls in whatever is relevant to each job when tailoring.
+          </p>
+          <div className="folder-import">
+            <div>
+              <strong>Upload files</strong>
+              <p>Pick one or more files (PDF, DOCX, TXT, MD, JSON).</p>
+            </div>
+            <input
+              ref={filesInputRef}
+              multiple
+              onChange={(event) => setPickedFiles(Array.from(event.target.files ?? []))}
+              type="file"
+              accept=".docx,.pdf,.json,.txt,.md"
+            />
+            <button className="button" onClick={() => void submitFiles(pickedFiles, "files")} type="button" disabled={!pickedFiles.length || isUploading}>
+              Upload Files
+            </button>
+          </div>
+          <div className="folder-import">
+            <div>
+              <strong>Or import a whole folder</strong>
+              <p>Choose a folder of CVs, certificates, and profile documents at once.</p>
+            </div>
+            <input
+              ref={folderInputRef}
+              multiple
+              onChange={(event) => setFolderFiles(Array.from(event.target.files ?? []))}
+              type="file"
+              webkitdirectory="true"
+            />
+            <button className="button" onClick={() => void submitFiles(folderFiles, "folder")} type="button" disabled={!folderFiles.length || isUploading}>
+              Import Folder
+            </button>
+          </div>
+          {isUploading || uploadStatus ? (
+            <p className={`upload-status ${isUploading ? "busy" : uploadStatus.startsWith("✓") ? "ok" : "err"}`} role="status">
+              {isUploading ? <Loader2 className="spin" size={15} /> : uploadStatus.startsWith("✓") ? <CheckCircle2 size={15} /> : <AlertTriangle size={15} />}
+              <span>{uploadStatus}</span>
+            </p>
+          ) : null}
+        </section>
+        <section className="panel paste-panel">
+          <div className="panel-header">
+            <h2>Paste text</h2>
+            <span>Quick evidence</span>
+          </div>
+          <p className="prep-intro">
+            Everything you paste here becomes <strong>evidence</strong> the AI can draw from when tailoring — projects, certificates, achievements, references, links. It’s only used where it’s relevant to a job.
+          </p>
+          <Field label="What is this? e.g. Projects at Siemens, IELTS certificate…">
+            <input
+              onChange={(event) => setPasteLabel(event.target.value)}
+              placeholder="Give it a short name"
+              type="text"
+              value={pasteLabel}
+            />
+          </Field>
+          <Field label="Content">
+            <textarea
+              className="paste-textarea"
+              onChange={(event) => setPasteContent(event.target.value)}
+              placeholder="Paste the details here — bullet points, full sentences, raw notes: all fine."
+              spellCheck={false}
+              value={pasteContent}
+            />
+          </Field>
+          <div className="form-footer">
+            <span>{pasteStatus}</span>
+            <button
+              className="button primary icon-button"
+              onClick={() => void savePastedInfo()}
+              type="button"
+              disabled={isSavingPaste || !pasteLabel.trim() || !pasteContent.trim()}
+            >
+              {isSavingPaste ? <Loader2 className="spin" size={17} /> : <ClipboardPaste size={17} />}
+              <span>{isSavingPaste ? "Saving…" : "Save pasted info"}</span>
+            </button>
+          </div>
+        </section>
+      </div>
       <section className="split">
         <div className="panel version-list">
           <div className="panel-header">
-            <h2>Versions</h2>
+            <h2>Materials</h2>
             <span>{loading ? "Loading" : error ? "Offline" : `${data.length} total`}</span>
           </div>
-          {data.length === 0 ? <p className="empty-state">No CV versions imported yet.</p> : null}
+          <p className="evidence-note">Everything here except your base CV counts as <strong>evidence</strong> — the AI pulls in whatever is relevant to each job. Click an item to view or edit it.</p>
+          {data.length === 0 ? <p className="empty-state">Nothing here yet — upload files or paste text above.</p> : null}
           {data.map((version) => {
             const role = roleOf(version);
             return (
@@ -1502,7 +1985,7 @@ function CvVersions() {
         </div>
         <div className="panel editor-panel">
           <div className="panel-header">
-            <h2>{selected?.label ?? "No version selected"}</h2>
+            <h2>{selected?.label ?? "No material selected"}</h2>
             <div className="button-group">
               <IconButton icon={FilePenLine} label="Use as Template" onClick={() => void setTemplate()} disabled={!selected || selectedIsTemplate} />
               <IconButton icon={Save} label="Save Draft" onClick={() => void saveVersion()} disabled={!selected} />
@@ -1511,7 +1994,13 @@ function CvVersions() {
           {selected ? (
             <div className="role-bar">
               {selectedIsTemplate ? (
-                <p className="format-hint">This is your <strong>active template</strong>. Its content and design are the base for tailored CVs.</p>
+                <div className="template-hint-row">
+                  <p className="format-hint">This is your <strong>Base CV / Template</strong> — tailored CVs keep its structure and design.</p>
+                  <button className="button ghost icon-button small" onClick={onGoToBaseCv} type="button">
+                    <FileText size={14} />
+                    <span>Open Base CV page</span>
+                  </button>
+                </div>
               ) : (
                 <label className="toggle-row">
                   <input
@@ -1519,7 +2008,7 @@ function CvVersions() {
                     checked={selected.includeEvidence !== false}
                     onChange={(event) => void toggleEvidence(event.target.checked)}
                   />
-                  <span>Use this CV as <strong>evidence</strong> when tailoring (the AI pulls in relevant facts from it)</span>
+                  <span>Use this as <strong>evidence</strong> when tailoring (the AI pulls in relevant facts from it)</span>
                 </label>
               )}
             </div>
@@ -1568,47 +2057,116 @@ function AuditLog() {
   );
 }
 
-function Field({ label, children }: { label: string; children: React.ReactNode }) {
+function Field({ label, help, children }: { label: string; help?: string; children: React.ReactNode }) {
   return (
     <label className="field">
-      <span>{label}</span>
+      <span>
+        {label}
+        {help ? (
+          <span className="help-tip" tabIndex={0} aria-label={help}>
+            ?
+            <span className="help-tip-bubble" role="tooltip">{help}</span>
+          </span>
+        ) : null}
+      </span>
       {children}
     </label>
   );
 }
 
 function ModelSelect({
-  filter,
   models,
   purpose,
   value,
   onChange
 }: {
-  filter: string;
   models: OpenRouterModel[];
-  purpose: "search" | "tailor" | "apply" | "general";
+  purpose: ModelPurpose;
   value: string;
   onChange: (value: string) => void;
 }) {
-  const filtered = models
-    .filter((model) => matchesPurpose(model, purpose))
-    .filter((model) => {
-      const query = filter.trim().toLowerCase();
-      if (!query) return true;
-      return [model.id, model.name, model.category].some((value) => value.toLowerCase().includes(query));
-    })
-    .sort((left, right) => compareModels(left, right, purpose));
+  const [query, setQuery] = useState("");
+  const [open, setOpen] = useState(false);
+  const wrapRef = useRef<HTMLDivElement>(null);
+  const selected = models.find((model) => model.id === value);
 
-  const options = filtered.length ? filtered : models;
+  useEffect(() => {
+    const onDocClick = (event: MouseEvent) => {
+      if (wrapRef.current && !wrapRef.current.contains(event.target as Node)) setOpen(false);
+    };
+    document.addEventListener("mousedown", onDocClick);
+    return () => document.removeEventListener("mousedown", onDocClick);
+  }, []);
+
+  const q = query.trim().toLowerCase();
+  // The local Codex option (user's ChatGPT plan) is pinned above the list.
+  const codex = models.find((model) => model.local);
+  const searchable = models.filter((model) => !model.local);
+  // With a query, search across ALL models; with none, suggest role-relevant ones.
+  const base = q ? searchable : searchable.filter((model) => matchesPurpose(model, purpose));
+  const filtered = base
+    .filter((model) => !q || [model.id, model.name, model.category].some((field) => field.toLowerCase().includes(q)))
+    .sort((left, right) => compareModels(left, right, purpose))
+    .slice(0, 80);
+  const showCodex = codex && (!q || "codex chatgpt openai plan subscription".includes(q) || codex.name.toLowerCase().includes(q));
+
+  const pick = (id: string) => { onChange(id); setQuery(""); setOpen(false); };
 
   return (
-    <select onChange={(event) => onChange(event.target.value)} value={value || chooseModel(options, purpose)?.id || ""}>
-      {options.map((model) => (
-        <option key={model.id} value={model.id}>
-          {modelLabel(model)}
-        </option>
-      ))}
-    </select>
+    <div className={open ? "model-combo open" : "model-combo"} ref={wrapRef}>
+      <input
+        className="model-combo-input"
+        type="text"
+        role="combobox"
+        aria-expanded={open}
+        aria-autocomplete="list"
+        value={open ? query : (selected ? selected.name : value)}
+        placeholder={selected ? selected.name : "Search models by name…"}
+        onFocus={() => { setOpen(true); setQuery(""); }}
+        onChange={(event) => { setQuery(event.target.value); setOpen(true); }}
+        onKeyDown={(event) => {
+          if (event.key === "Escape") setOpen(false);
+          if (event.key === "Enter" && filtered[0]) { event.preventDefault(); pick(filtered[0].id); }
+        }}
+      />
+      <span className="model-combo-caret" aria-hidden>⌄</span>
+      {open ? (
+        <div className="model-combo-list">
+          {showCodex ? (
+            <button
+              type="button"
+              key={codex.id}
+              className={codex.id === value ? "model-combo-option codex selected" : "model-combo-option codex"}
+              onMouseDown={(event) => { event.preventDefault(); pick(codex.id); }}
+            >
+              <span className="mco-name">
+                {codex.name}
+                <span className={codex.available ? "mco-badge ok" : "mco-badge warn"}>
+                  {codex.available ? "No extra cost" : "Not detected"}
+                </span>
+              </span>
+              <span className="mco-id">
+                {codex.available
+                  ? "Runs locally via the Codex CLI — uses your ChatGPT subscription instead of OpenRouter credit."
+                  : codex.unavailableReason || "Install the Codex CLI and run `codex login`."}
+              </span>
+            </button>
+          ) : null}
+          {filtered.length === 0 && !showCodex ? <div className="model-combo-empty">No models match “{query}”.</div> : null}
+          {filtered.map((model) => (
+            <button
+              type="button"
+              key={model.id}
+              className={model.id === value ? "model-combo-option selected" : "model-combo-option"}
+              onMouseDown={(event) => { event.preventDefault(); pick(model.id); }}
+            >
+              <span className="mco-name">{model.name}</span>
+              <span className="mco-id">{model.id}{model.contextLength ? ` · ${Math.round(model.contextLength / 1000)}k` : ""}</span>
+            </button>
+          ))}
+        </div>
+      ) : null}
+    </div>
   );
 }
 
@@ -1697,20 +2255,17 @@ function titleCase(value: string) {
   return value.replace(/[-_]/g, " ").replace(/\b\w/g, (letter) => letter.toUpperCase());
 }
 
-function modelLabel(model: OpenRouterModel) {
-  const context = model.contextLength ? ` - ${Math.round(model.contextLength / 1000)}k ctx` : "";
-  return `OpenRouter: ${model.name} (${model.id})${context}`;
-}
 
-function chooseModel(models: OpenRouterModel[], purpose: "search" | "tailor" | "apply" | "general") {
+function chooseModel(models: OpenRouterModel[], purpose: ModelPurpose) {
   const filtered = models.filter((model) => matchesPurpose(model, purpose));
   const ranked = filtered.length ? filtered : models;
   return ranked.slice().sort((left, right) => compareModels(left, right, purpose))[0];
 }
 
-function matchesPurpose(model: OpenRouterModel, purpose: "search" | "tailor" | "apply" | "general") {
-  if (purpose === "search") {
-    return model.category === "search" || model.category === "general";
+function matchesPurpose(model: OpenRouterModel, purpose: ModelPurpose) {
+  if (purpose === "search" || purpose === "review") {
+    // Cheap/fast models for search and for the reviewer step.
+    return model.category === "search" || model.category === "general" || /grok|fast|flash|mini|nano|haiku|lite/i.test(model.id);
   }
   if (purpose === "tailor" || purpose === "apply") {
     return model.category === "tailor" || model.category === "apply" || /claude/i.test(model.id);
@@ -1718,8 +2273,8 @@ function matchesPurpose(model: OpenRouterModel, purpose: "search" | "tailor" | "
   return true;
 }
 
-function compareModels(left: OpenRouterModel, right: OpenRouterModel, purpose: "search" | "tailor" | "apply" | "general") {
-  if (purpose === "search") {
+function compareModels(left: OpenRouterModel, right: OpenRouterModel, purpose: ModelPurpose) {
+  if (purpose === "search" || purpose === "review") {
     return scoreSearch(left) - scoreSearch(right);
   }
   return scoreTailor(left) - scoreTailor(right);

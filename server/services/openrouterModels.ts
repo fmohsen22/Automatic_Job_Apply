@@ -7,6 +7,10 @@ export interface OpenRouterModel {
   promptPrice?: string;
   completionPrice?: string;
   category: "search" | "tailor" | "apply" | "general";
+  // Set on the local "codex" pseudo-model only.
+  local?: boolean;
+  available?: boolean;
+  unavailableReason?: string;
 }
 
 interface OpenRouterModelsResponse {

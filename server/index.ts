@@ -20,7 +20,7 @@ const dirname = path.dirname(fileURLToPath(import.meta.url));
 const webDir = path.resolve(dirname, "../web");
 
 app.use(cors());
-app.use(express.json({ limit: "5mb" }));
+app.use(express.json({ limit: "25mb" }));
 
 const healthHandler = (_req: express.Request, res: express.Response) => {
   res.json({ ok: true, service: "automate-jobapply", milestone: "M2" });

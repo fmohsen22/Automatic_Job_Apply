@@ -1,0 +1,118 @@
+{
+  "_readme": "Model combinations offered by the 'Set the best combination' button in Settings. This file is read fresh on every request — edit it, save, refresh the app: no rebuild needed. To update after new models come out: check prices/quality at https://openrouter.ai/models (the app's own list is at GET /api/models/openrouter and includes per-token prices), edit the model ids below, and bump 'updated'. Slot meanings: searchModel = query building + scoring every found job (runs dozens of times per search, cheap+fast matters); tailorModel = writes the CV + cover letter (biggest quality lever); reviewModel = critiques the draft against the user's real materials (a different family than the tailor catches more); applyModel = assists form auto-fill; generalModel = job-page/screenshot extraction and misc (should be vision-capable). 'codex' is the local Codex CLI (user's ChatGPT plan). Cost assumptions for the 'costs' rows: one job search scores ~50 found jobs (~280k in / 14k out tokens on the search model); one CV + cover letter runs the tailor twice (generate + refine, ~40k in / 8k out) plus one reviewer pass (~10k in / 1k out); 'everything' = one search + one tailored application + apply assist. Recompute these when you swap models.",
+  "updated": "2026-07-18",
+  "presets": [
+    {
+      "id": "cheapest",
+      "name": "Cheapest",
+      "tagline": "Pennies per application — surprisingly decent quality.",
+      "estimatedCost": "≈ $0.05–0.10 per tailored application",
+      "models": {
+        "searchModel": "google/gemini-2.5-flash-lite",
+        "tailorModel": "openai/gpt-5.4-mini",
+        "reviewModel": "deepseek/deepseek-v4-flash",
+        "applyModel": "openai/gpt-5.4-mini",
+        "generalModel": "google/gemini-2.5-flash"
+      },
+      "notes": "Gemini Flash Lite ($0.10/M) scores jobs fast; GPT-5.4 Mini is the best cheap writer; DeepSeek V4 Flash reviews from a different model family for almost nothing; Gemini 2.5 Flash handles screenshots (vision).",
+      "costs": [
+        {
+          "label": "Job search (scores ~50 jobs)",
+          "value": "≈ $0.03–0.05"
+        },
+        {
+          "label": "CV + cover letter (incl. review loop)",
+          "value": "≈ $0.05–0.10"
+        },
+        {
+          "label": "Everything (search + CV + apply)",
+          "value": "≈ $0.10–0.15"
+        }
+      ]
+    },
+    {
+      "id": "balanced",
+      "name": "Balanced — recommended",
+      "tagline": "Strong CVs at a fair price. The sweet spot for most people.",
+      "estimatedCost": "≈ $0.15–0.25 per tailored application",
+      "models": {
+        "searchModel": "x-ai/grok-4.3",
+        "tailorModel": "anthropic/claude-sonnet-5",
+        "reviewModel": "openai/gpt-5.4-mini",
+        "applyModel": "anthropic/claude-sonnet-5",
+        "generalModel": "anthropic/claude-sonnet-5"
+      },
+      "notes": "Claude Sonnet 5 ($2/M in) is currently the best writing value — newer AND cheaper than Sonnet 4.5. Grok 4.3 ranks jobs quickly; GPT-5.4 Mini gives a cross-family second opinion on every draft.",
+      "costs": [
+        {
+          "label": "Job search (scores ~50 jobs)",
+          "value": "≈ $0.30–0.50"
+        },
+        {
+          "label": "CV + cover letter (incl. review loop)",
+          "value": "≈ $0.15–0.25"
+        },
+        {
+          "label": "Everything (search + CV + apply)",
+          "value": "≈ $0.50–0.75"
+        }
+      ]
+    },
+    {
+      "id": "best",
+      "name": "Best quality",
+      "tagline": "Cost is no object — the strongest available combination.",
+      "estimatedCost": "≈ $0.80–1.20 per tailored application",
+      "models": {
+        "searchModel": "anthropic/claude-sonnet-5",
+        "tailorModel": "anthropic/claude-fable-5",
+        "reviewModel": "openai/gpt-5.5",
+        "applyModel": "anthropic/claude-sonnet-5",
+        "generalModel": "anthropic/claude-opus-4.8"
+      },
+      "notes": "Claude Fable 5 ($10/M in) is Anthropic's top model and an exceptional writer; GPT-5.5 reviews every draft from the rival family; even job scoring runs on Sonnet 5, and Opus 4.8 handles extraction.",
+      "costs": [
+        {
+          "label": "Job search (scores ~50 jobs)",
+          "value": "≈ $0.60–0.90"
+        },
+        {
+          "label": "CV + cover letter (incl. review loop)",
+          "value": "≈ $0.80–1.20"
+        },
+        {
+          "label": "Everything (search + CV + apply)",
+          "value": "≈ $1.50–2.00"
+        }
+      ]
+    },
+    {
+      "id": "chatgpt-plan",
+      "name": "Your ChatGPT plan",
+      "tagline": "No extra cost — everything runs on your ChatGPT subscription via the local Codex CLI.",
+      "estimatedCost": "$0 extra — uses your ChatGPT plan",
+      "models": {
+        "searchModel": "codex",
+        "tailorModel": "codex",
+        "reviewModel": "codex",
+        "applyModel": "codex",
+        "generalModel": "codex"
+      },
+      "notes": "Requires the Codex CLI installed and logged in (codex login). Job searches will be noticeably slower — every job score spawns a local Codex run — and generate+review+refine uses the same model family, so there is no cross-family critic. Great for trying things without spending OpenRouter credit.",
+      "costs": [
+        {
+          "label": "Job search (scores ~50 jobs)",
+          "value": "$0 (slower — ~50 local Codex runs)"
+        },
+        {
+          "label": "CV + cover letter (incl. review loop)",
+          "value": "$0"
+        },
+        {
+          "label": "Everything (search + CV + apply)",
+          "value": "$0 (counts toward plan limits)"
+        }
+      ]
+    }
+  ]
+}

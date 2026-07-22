@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "id": "materials-paste-import",
+  "title": "Save pasted info as evidence in My Materials",
+  "feature": "materials",
+  "tags": ["cv"],
+  "steps": [
+    { "description": "Open the app", "action": "goto", "value": "http://127.0.0.1:4173" },
+    { "description": "Go to My Materials", "action": "click", "target": [{ "strategy": "role", "value": "button", "name": "My Materials" }] },
+    { "description": "My Materials heading visible", "action": "expect", "target": [{ "strategy": "role", "value": "heading", "name": "My Materials" }], "expect": { "type": "visible" } },
+    { "description": "Name the pasted info", "action": "fill", "target": [{ "strategy": "role", "value": "textbox", "name": "What is this" }, { "strategy": "css", "value": ".paste-panel input[type=text]" }], "value": "UITest Pasted Evidence" },
+    { "description": "Paste the evidence text", "action": "fill", "target": [{ "strategy": "placeholder", "value": "Paste the details here" }, { "strategy": "css", "value": ".paste-panel textarea" }], "value": "IELTS 8.0 certificate (2024). Led automation projects at Siemens Energy: cut reporting time by 80% with Python and Playwright." },
+    { "description": "Click Save pasted info", "action": "click", "target": [{ "strategy": "role", "value": "button", "name": "Save pasted info" }] },
+    { "description": "Save confirmation appears", "action": "expect", "target": [{ "strategy": "text", "value": "added to your materials as evidence" }], "expect": { "type": "visible" }, "timeoutMs": 15000 },
+    { "description": "New item appears in the materials list", "action": "expect", "target": [{ "strategy": "role", "value": "button", "name": "UITest Pasted Evidence" }], "expect": { "type": "visible" }, "timeoutMs": 15000 }
+  ]
+}

@@ -1,8 +1,44 @@
-# Automate JobApply
+# Sophie App
 
-Automate JobApply is a local AI workspace for searching jobs, ranking them against your experience, preparing tailored application documents, and tracking assisted application attempts.
+Sophie App is a local AI workspace for searching jobs, ranking them against your experience, preparing tailored application documents, and tracking assisted application attempts.
 
 The app runs on your own computer. It stores data in local SQLite, encrypts saved API keys, keeps an audit log, and uses explicit safety stops for risky application flows.
+
+---
+
+## 🍎 Setup on your Mac — for Sophie
+
+You don't need to understand any of this. There are **two commands**, and a helper does the rest — it checks what your Mac needs and installs anything missing on its own.
+
+Open the app called **Terminal** (press `Cmd + Space`, type `Terminal`, press Enter), then:
+
+**1. Paste this line and press Enter** — it downloads Sophie App to your Desktop and starts the automatic setup:
+
+```bash
+cd ~/Desktop && git clone https://github.com/fmohsen22/Automatic_Job_Apply.git sophie-app && cd sophie-app && bash scripts/setup-mac.sh
+```
+
+> The very first time, a small window may pop up saying *"install the command line developer tools?"* — click **Install**, wait for it to finish, then paste the same line again.
+
+**2. Follow the prompts.** The helper installs everything (Homebrew, Node, the browser, and — if you say yes — LibreOffice), then asks *"Start Sophie App now?"* — press **Enter** for yes.
+
+If it asks for your **Mac password**, type it (the letters stay hidden — that's normal) and press Enter. The first run takes a few minutes while it downloads things.
+
+That's it — Sophie App opens in your browser at **http://127.0.0.1:4173**. The first time you'll paste two free keys (see [First Setup](#first-setup) below). To **stop** the app, click the Terminal window and press `Ctrl + C`.
+
+### Opening Sophie again next time
+
+Easiest: open the **`sophie-app`** folder on your Desktop and **double-click `run-mac.command`**.
+
+Or, in Terminal:
+
+```bash
+cd ~/Desktop/sophie-app && npm run local
+```
+
+> 💡 Want to re-check or repair the setup later? Double-click **`setup-mac.command`** in the `sophie-app` folder — it re-runs the automatic installer and skips anything already done.
+
+---
 
 ## What It Does
 
@@ -22,18 +58,18 @@ The app runs on your own computer. It stores data in local SQLite, encrypts save
 
 ## Output formats
 
-When you generate materials for a job you choose an **Output format / template**:
+When you generate materials for a job you choose an **Output format / template** from a visual gallery — every template shows a **preview thumbnail** so you can see the design before picking it. **Every format produces an editable Word (.docx) file** so you can always fine-tune the result yourself:
 
-- **Navy / Energy** — an HTML-rendered design; your tailored content becomes a polished **PDF**. Works from any base CV (including a PDF). Auto-PDF is reliable here.
+- **Navy / Energy** — an HTML-rendered design; your tailored content becomes a polished **PDF** plus a clean editable **Word** version of the same content. Works from any base CV (including a PDF). Auto-PDF is reliable here.
 - **Designed Word templates** (Simple Objective, Classic Header, ATS Clean, Photo — Modern, etc.) — your tailored content is poured into a real `.docx` design. The **Word file is the accurate, editable output**; an auto-PDF is produced best-effort (some designed templates add blank pages under LibreOffice — open the Word file and "Save as PDF" for a clean one).
 - **My Word template** — if your selected CV is a `.docx`, the app rewrites that file in place.
-- **Plain text** — text-only tailoring.
+- **Plain text** — text-only tailoring, plus an auto-built editable **Word** version.
 
 **Profile photo:** upload a headshot on the **Base CV** page. Photo templates (e.g. *Photo — Modern*) insert it automatically (cropped square); other templates ignore it. Add new gallery designs by dropping a `.docx` into `server/templates/docx/` and registering it in `server/services/templates.ts`.
 
 ## Current Limitations
 
-- **Editing a designed PDF directly is not supported** — gallery templates produce a PDF (and HTML). For an editable Word file, use the *My Word template* option with your own `.docx`.
+- **Editing a designed PDF directly is not supported** — but every format now also produces an editable Word file, so edit the `.docx` and export a fresh PDF from Word if needed.
 - Rewriting an arbitrary uploaded PDF *in its original design* is not possible (a PDF is a fixed layout). Use a gallery template or a Word source instead.
 - **Automatic PDF export of the tailored CV needs LibreOffice** installed (`soffice`). Without it you still get the exact-format Word file — open it and "Save as PDF", or install LibreOffice for one-click PDFs.
 - Job search currently depends on Tavily plus generated search queries. For very broad market coverage, more direct providers/adapters should be added.
@@ -111,9 +147,9 @@ npm run local
 ### After it opens (http://127.0.0.1:4173)
 
 1. **Settings** → paste your **OpenRouter** and **Tavily** keys → Save.
-2. **Base CV** → upload your CV (upload a Word `.docx` for exact-format output; PDF also works). Optionally add a photo.
-3. **CV Versions** → mark your CV as the **Template**.
-4. **Job Search** → describe what you want in plain language and search — or use **Found a job yourself?** to paste a job link.
+2. **Base CV** → upload your one main CV (a Word `.docx` keeps your exact layout; PDF also works). It is saved and set as your template automatically — the page confirms "This is your base CV". Optionally add a photo.
+3. **My Materials** → add everything else: certificates, other CVs, reference letters, and pasted text/personal info. All of it becomes evidence the AI can draw from.
+4. **Job Search** → describe what you want in plain language and search — or use **Found a job yourself?** to add a job by **link, pasted text, or an uploaded PDF / Word doc / screenshot** (handy for login-only sites).
 5. Open a job → pick a template → **Generate Materials** → download Word / PDF.
 
 The first run downloads dependencies and a browser (a few minutes); later runs start in seconds. Stop the app with `Ctrl+C`. The web UI is at `http://127.0.0.1:4173` and the API at `http://127.0.0.1:4100`.
@@ -139,40 +175,45 @@ Open `Settings`.
 6. Choose models for:
    - Search
    - Tailor
-   - Apply
+   - Review
    - General
+
+### Model combinations ("Set the best combination")
+
+Not sure which models to pick? Every model field has a **?** icon explaining exactly what that model does. The **Set the best combination** button opens researched presets — **Cheapest** (~$0.01–0.03/application), **Balanced** (recommended), **Best quality**, and **Your ChatGPT plan** ($0 extra via Codex) — and one click sets and saves all five models.
+
+The presets live in [`server/config/model-presets.json`](server/config/model-presets.json). When new models come out, re-research (prices are in the app's own `GET /api/models/openrouter`), edit that file, and bump its `updated` date — the app reads it fresh on every open, no rebuild needed.
+
+### Using your ChatGPT plan instead of OpenRouter (optional)
+
+If you already pay for ChatGPT, every model dropdown has **Codex — your ChatGPT plan** pinned at the top. Picking it routes that step through the local [Codex CLI](https://github.com/openai/codex) using your existing subscription — no OpenRouter credit spent. You can also mix (e.g. Codex for tailoring, a cheap OpenRouter model for search) or switch back and forth to compare results.
+
+Requirements: install the Codex CLI and log in once with `codex login`. The app detects it automatically and shows its status in the dropdown; if it isn't installed the option explains what to do. The CLI is run in a read-only sandbox against an empty temp folder, and your credentials never pass through the app.
 
 Do not paste real API keys into chat or commit them to git. Use the Settings UI or your local `.env`.
 
 ## Recommended Workflow
 
-### 1. Import Your Materials
+### 1. Set Your Base CV
 
-Go to `Base CV`.
+Go to `Base CV` and upload your one main CV (Word `.docx` recommended so tailored CVs keep your exact layout; PDF works too).
 
-You can import:
+It is saved and **set as your template automatically** — the page always shows a card confirming which CV is your base. Uploading a new file replaces it (the old one stays in My Materials as evidence). This is also where your profile photo lives.
 
-- PDF CVs
-- Word/DOCX CVs
-- JSON CVs
+### 2. Add Everything Else in My Materials
+
+Go to `My Materials` — the one place for all supporting input:
+
+- PDF / Word / JSON CVs
 - TXT/MD notes
 - certificates
 - project descriptions
 - detailed personal experience notes
+- **pasted text** — use the "Paste text" card to type or paste anything (projects, certificates, achievements, references)
 
-Folder import stores every supported file, not just one CV.
+Folder import stores every supported file, not just one CV. Everything here is **evidence**: the AI pulls in whatever is relevant for each job when tailoring.
 
-### 2. Select The CV Template
-
-Go to `CV Versions`.
-
-Choose the CV that should act as your template and click:
-
-```text
-Use as Template
-```
-
-This template is the base for all job-specific CV drafts. Other uploaded materials are used as supporting evidence.
+You can add several CVs, but exactly **one** (your Base CV) acts as the template for formatting. To promote a different CV, click `Use as Template` on it in My Materials — or just upload it on the Base CV page.
 
 ### 3. Search Jobs
 
@@ -216,7 +257,7 @@ It creates:
 
 Download the tailored CV as **Word**, **PDF**, or plain **text** from the job detail page.
 
-The model is instructed not to invent experience. Missing requirements should appear in the checklist, not be falsely added to the CV.
+**Truthfulness guarantee:** every generation prompt instructs the model to use ONLY facts from your uploaded materials — never invent employers, titles, dates, degrees, certificates, skills, or metrics. The reviewer model cross-checks each claim in the draft against your original CV and flags anything unsupported, and the refine step removes flagged content. Missing requirements appear in the checklist as gaps — never falsely added to the CV.
 
 ### 5. Assisted Apply
 

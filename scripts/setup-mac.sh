@@ -74,10 +74,26 @@ else
   esac
 fi
 
+# Put a one-click launcher on the Desktop (absolute path baked in, so it works
+# from anywhere — unlike copying run-mac.command, which uses a relative path).
+step "Desktop shortcut"
+APP_DIR="$(pwd)"
+LAUNCHER="$HOME/Desktop/Start Sophie App.command"
+if {
+  printf '#!/bin/zsh\n'
+  printf 'eval "$(/opt/homebrew/bin/brew shellenv 2>/dev/null || /usr/local/bin/brew shellenv 2>/dev/null)"\n'
+  printf 'cd "%s"\n' "$APP_DIR"
+  printf 'exec node scripts/bootstrap-local.mjs\n'
+} > "$LAUNCHER" 2>/dev/null && chmod +x "$LAUNCHER" 2>/dev/null; then
+  ok "added \"Start Sophie App\" to your Desktop — double-click it any time to start"
+else
+  warn "couldn't add a Desktop shortcut — you can still start from this folder"
+fi
+
 # Done.
 printf '\n%s✓ All set!%s Sophie App is ready.\n' "$GREEN$BOLD" "$RESET"
-printf '  To start it later, run: %snpm run local%s (from this folder)\n' "$BOLD" "$RESET"
-printf '  Or just double-click %srun-mac.command%s in this folder.\n\n' "$BOLD" "$RESET"
+printf '  Next time, just double-click %s"Start Sophie App"%s on your Desktop.\n' "$BOLD" "$RESET"
+printf '  (Or run %snpm run local%s from this folder.)\n\n' "$BOLD" "$RESET"
 
 printf 'Start Sophie App now? [Y/n] '
 read -r start || start="y"

@@ -28,13 +28,9 @@ That's it — Sophie App opens in your browser at **http://127.0.0.1:4173**. The
 
 ### Opening Sophie again next time
 
-Easiest: open the **`sophie-app`** folder on your Desktop and **double-click `run-mac.command`**.
+The setup already put a **`Start Sophie App`** icon on your Desktop — just **double-click it**. That's the only thing you need next time.
 
-Or, in Terminal:
-
-```bash
-cd ~/Desktop/sophie-app && npm run local
-```
+<sub>(Prefer Terminal? `cd ~/Desktop/sophie-app && npm run local`. Or double-click `run-mac.command` inside the app folder.)</sub>
 
 > 💡 Want to re-check or repair the setup later? Double-click **`setup-mac.command`** in the `sophie-app` folder — it re-runs the automatic installer and skips anything already done.
 

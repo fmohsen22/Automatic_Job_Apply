@@ -27,11 +27,18 @@ const CV_JSON_MARKER = "<<<CV_JSON>>>";
 // best practice) WITHOUT ever loosening the faithfulness rules above it — detail
 // must always trace back to the candidate's real materials, never be invented.
 const DETAIL_GUIDANCE =
-  "COMPLETENESS & DETAIL (write a strong, thorough CV — never a sparse one): Draw out ALL of the candidate's real, relevant experience from the CV and supporting materials. A single page is fine only when that is genuinely all the real content supports; otherwise use up to TWO full pages rather than dropping real, relevant detail. Apply tech-resume best practice:\n" +
-  "- Include every section the candidate's REAL materials support: a short professional summary; relevant links (LinkedIn / GitHub / portfolio) when present; a dedicated TOOLS / TECH STACK section listing the candidate's real tools, languages, frameworks and platforms grouped by category; a skills section; detailed WORK EXPERIENCE; a PROJECTS / selected-work section for real projects; education; certifications; languages.\n" +
-  "- For EACH real role, write 3-6 specific bullet points. Start each with a strong action verb (Built, Automated, Led, Reduced, Designed, Delivered, Migrated…) and include the real metric or outcome whenever the materials provide one (numbers, %, time saved, scale, team size). Never compress a rich role into one or two vague lines.\n" +
-  "- Pull EVERY real tool, technology, framework and language named anywhere in the materials into the tools/skills sections, and mirror the exact terminology the job description uses wherever the candidate genuinely has that skill (recruiters and ATS scanners match on those keywords).\n" +
-  "- Prefer specific and concrete over generic. Expand and elaborate on REAL facts — this is about surfacing detail the candidate already has, not padding. Every added detail must trace back to the materials; more detail must never mean invented detail.\n\n";
+  "COMPLETENESS & DETAIL (tech-resume best practice — write a strong, thorough CV, never a sparse one): Draw out ALL of the candidate's real, relevant experience from the CV and supporting materials. A single page is fine only when that is genuinely all the real content supports; otherwise use up to TWO full pages rather than dropping real, relevant detail.\n" +
+  "MANDATORY SECTION CHECKLIST — include every one of these the candidate's REAL materials support (a professional tech resume is incomplete without them):\n" +
+  "  1. Name + contact including LOCATION (city, country), phone, email.\n" +
+  "  2. Professional summary: 1-3 sentences — title, sector, key skills/credentials, experience overview.\n" +
+  "  3. Relevant LINKS: LinkedIn / GitHub / portfolio, whenever they appear in the materials.\n" +
+  "  4. TOOLS / TECH STACK: a dedicated section listing the candidate's real languages, frameworks, tools and platforms grouped by category — separate from soft skills.\n" +
+  "  5. SKILLS: focused, quality over quantity; avoid generic 'experience with' phrasing.\n" +
+  "  6. WORK EXPERIENCE: for EACH real role 3-6 specific bullets, each starting with a strong action verb (Built, Automated, Led, Reduced, Designed, Delivered…) and carrying the real metric or outcome whenever the materials provide one (numbers, %, time saved, scale, users). Never compress a rich role into one or two vague lines.\n" +
+  "  7. PROJECTS / selected work: real projects with impact and technologies.\n" +
+  "  8. EDUCATION: relevant degrees with institution and year.\n" +
+  "  9. CERTIFICATIONS and 10. LANGUAGES (with the candidate's real proficiency levels, verbatim).\n" +
+  "KEYWORDS: mirror the exact terminology of the job description wherever the candidate genuinely has that skill (recruiters and ATS scanners match those words). Prefer specific and concrete over generic; every detail must trace back to the materials — more detail must never mean invented detail.\n\n";
 
 type ChecklistItem = {
   requirement: string;
@@ -496,12 +503,25 @@ async function fillTemplateDocx(input: {
   const cvTextOf = (parsed: { replacements: Map<number, string> }) =>
     segments.map((segment) => parsed.replacements.get(segment.index) ?? segment.text).filter((line) => line.trim().length > 0).join("\n");
 
+  // Content slots the model left holding the template's SAMPLE text. Headings
+  // legitimately stay; any slot longer than ~3 words must become real content —
+  // this guarantees every section the design has (education, languages,
+  // certifications…) actually gets filled.
+  const unfilledSlots = (result: { replacements: Map<number, string> }) =>
+    candidates
+      .filter((segment) => segment.text.trim().split(/\s+/).length > 3 && !result.replacements.has(segment.index))
+      .map((segment) => segment.index);
+
   const sourceForReview = `${baseText}\n\nEVIDENCE MATERIALS:\n${JSON.stringify(input.supportingMaterials)}`;
   let parsed = await runFill("");
   for (let attempt = 0; attempt < 2; attempt++) {
     const critique = await unsupportedCritique(input.reviewModel || "", input.model, sourceForReview, input.job, cvTextOf(parsed));
-    if (!critique) break;
-    parsed = await runFill(`\n\nCRITICAL FAITHFULNESS FIX — the following were flagged as unsupported/invented. Do NOT include them or anything like them; use ONLY facts present in the candidate's real materials:\n${critique}`);
+    const missing = unfilledSlots(parsed);
+    if (!critique && !missing.length) break;
+    const fixes: string[] = [];
+    if (critique) fixes.push(`CRITICAL FAITHFULNESS FIX — the following were flagged as unsupported/invented. Do NOT include them or anything like them; use ONLY facts present in the candidate's real materials:\n${critique}`);
+    if (missing.length) fixes.push(`COMPLETENESS FIX — these slots still contain the template's sample text: ${missing.map((index) => `@@${index}@@`).join(", ")}. Fill EVERY one of them with the candidate's real content (condense or reuse real facts where needed — the sample person's text must never remain in the final CV).`);
+    parsed = await runFill(`\n\n${fixes.join("\n\n")}`);
   }
 
   const replacements = parsed.replacements;
@@ -581,6 +601,8 @@ async function runLlmGuarded(request: Parameters<typeof runLlm>[0]) {
 const TEMPLATE_SYSTEM_PROMPT =
   "You convert a candidate's real CV into structured JSON and tailor it to one job.\n\n" +
   "FAITHFULNESS (most important): Use ONLY facts present in the candidate's CV and supporting materials. Keep the candidate's real professional identity, role, employers, dates, and facts exactly. Do NOT rebrand them into a different profession or invent employers, titles, dates, degrees, certificates, tools, skills, metrics, or achievements. Reordering and rephrasing real content to emphasize what is most relevant to this job is allowed; fabricating is not.\n" +
+  "SOURCES ARE EQUAL: The candidate's CV and the SUPPORTING MATERIALS are equally valid sources of real facts. The materials are often NEWER than the base CV — roles, projects, certifications, and skills that appear only in the supporting materials are REAL and MUST be included when relevant to the job; adding them is required, not fabrication. When the evidence describes a role as the candidate's own position at a company that the base CV frames only as a client or consultancy assignment, follow the NEWER evidence: list it as its own experience entry with its dates. Order experience newest first; the candidate's current role leads the section.\n" +
+  "USER INSTRUCTIONS ARE BINDING: whatever the USER INSTRUCTIONS say about which roles, projects, dates, or emphasis to include is a hard requirement (as long as it is consistent with the materials) — never silently ignore them.\n" +
   "STRICT — no new tools/skills: Do NOT add any tool, technology, framework, library, product, brand, certification, or skill that is not LITERALLY written in the candidate's materials — not even closely related ones or as a '-style' analogy (e.g. do NOT add 'Anthropic' just because 'OpenAI' is present; do NOT add 'n8n', 'Zapier', 'Terraform', 'AWS', 'Kubernetes', or '-ready'/'-capable'/'-friendly'/'-style' qualifiers). Copy skill names and tech-stack items verbatim from the source; never expand, infer, round up, or pad a list. The same rule applies to the summary, headline, and stats. If the job requires a tool or qualification the candidate lacks, put it in the checklist as 'missing' or 'address' — never in the CV or cover letter.\n\n" +
   DETAIL_GUIDANCE +
   "Respond with EXACTLY these three sections, each starting with its marker on its own line, and nothing else:\n\n" +
@@ -600,6 +622,53 @@ const TEMPLATE_SYSTEM_PROMPT =
   CHECKLIST_MARKER + "\n" +
   'A valid JSON array; each item is {"requirement": string, "status": "met"|"missing"|"address", "evidence": string, "plan": string}.';
 
+// Deterministic tech-resume completeness gate (CareerFoundry-derived): checks a
+// structured CV for the mandatory sections the candidate's materials actually
+// support. Anything missing forces one corrective regeneration — completeness
+// is enforced by code, not left to the model's mood.
+function guideGaps(cv: StructuredCv, source: string): string[] {
+  const gaps: string[] = [];
+  const sections = cv.sections ?? [];
+  const headings = sections.map((section) => section.heading.toLowerCase()).join(" | ");
+  const types = new Set(sections.map((section) => section.type));
+  const contact = (cv.contact ?? []).join(" ");
+
+  if (!types.has("techstack")) gaps.push('a dedicated TOOLS / TECH STACK section (type "techstack") grouping the candidate\'s real tools by category');
+  const experience = sections.find((section) => section.type === "experience" && /experience|work|history|berufserfahrung/i.test(section.heading));
+  if (!experience || !(experience.entries ?? []).length) {
+    gaps.push("a WORK EXPERIENCE section with the candidate's real roles");
+  } else {
+    const thin = (experience.entries ?? []).filter((entry) => (entry.bullets ?? []).length < 3);
+    if (thin.length) gaps.push(`3-6 substantive bullets for every main role (${thin.length} role(s) currently have fewer than 3)`);
+  }
+  if (!/education|ausbildung/i.test(headings)) gaps.push("an EDUCATION section (degrees with institution and year)");
+  if (/istqb|ireb|tricentis|certificat|certified/i.test(source) && !/certif|accomplish|qualification/i.test(headings)) {
+    gaps.push("a CERTIFICATIONS section — the materials contain real certifications (e.g. ISTQB/IREB/Tricentis)");
+  }
+  if (/languages?\b|english|german|persian|deutsch|farsi/i.test(source) && !types.has("languages") && !/language|sprachen/i.test(headings)) {
+    gaps.push("a LANGUAGES section with the candidate's real proficiency levels, verbatim from the materials");
+  }
+  if (/linkedin|github/i.test(source) && !/linkedin|github/i.test(contact)) {
+    gaps.push("the candidate's LinkedIn/GitHub link in the contact lines (it is present in the materials)");
+  }
+  if (/wohni|claraven/i.test(source) && !types.has("projects") && !/project/i.test(headings)) {
+    gaps.push("a PROJECTS section for the candidate's real selected projects");
+  }
+  if (!/vienna|wien|\d{4}\s|austria/i.test(contact) && /vienna|wien|austria/i.test(source)) {
+    gaps.push("the candidate's location (city, country) in the contact lines");
+  }
+  // Recency: the CV's newest year must not lag the materials' newest year —
+  // otherwise the candidate's most recent role/projects were dropped (models
+  // tend to trust the older base CV over newer evidence).
+  const maxYear = (text: string) => Math.max(0, ...(text.match(/20[12]\d/g) ?? []).map(Number));
+  const cvYear = maxYear(JSON.stringify(cv));
+  const sourceYear = maxYear(source);
+  if (sourceYear && cvYear && sourceYear > cvYear) {
+    gaps.push(`the candidate's MOST RECENT roles and projects — the materials contain entries up to ${sourceYear} (newer roles/projects in the evidence), but the draft's newest entry is from ${cvYear}. The newest real role must appear first in experience`);
+  }
+  return gaps;
+}
+
 // Template mode: extract the candidate's real CV into a StructuredCv and tailor
 // it for the job in one call (CV as JSON, cover letter as plain text, checklist
 // as JSON) so the gallery template can render it.
@@ -615,7 +684,7 @@ async function generateTemplateCv(input: {
     ? (input.baseCv as { rawText: string }).rawText
     : JSON.stringify(input.baseCv);
 
-  const userPayload = [
+  const buildPayload = (addendum: string) => [
     `JOB TITLE: ${input.job.title}`,
     `COMPANY: ${input.job.company}`,
     `LOCATION: ${input.job.location ?? "Not specified"}`,
@@ -626,24 +695,54 @@ async function generateTemplateCv(input: {
     "SUPPORTING MATERIALS (facts about the candidate, evidence only):",
     JSON.stringify(input.supportingMaterials),
     "",
-    `USER INSTRUCTIONS: ${input.instructions || "(none)"}`,
+    `USER INSTRUCTIONS: ${input.instructions || "(none)"}${addendum}`,
     "",
     "CANDIDATE CV (extract the real content from this; never invent):",
     baseText
   ].join("\n");
 
-  const response = await runLlmGuarded({
-    model: input.model,
-    responseFormat: "text",
-    maxTokens: 12000,
-    messages: [
-      { role: "system", content: TEMPLATE_SYSTEM_PROMPT },
-      { role: "user", content: userPayload }
-    ]
-  });
+  const generate = async (addendum: string) => {
+    const response = await runLlmGuarded({
+      model: input.model,
+      responseFormat: "text",
+      maxTokens: 12000,
+      messages: [
+        { role: "system", content: TEMPLATE_SYSTEM_PROMPT },
+        { role: "user", content: buildPayload(addendum) }
+      ]
+    });
+    return parseTemplateResponse(response, baseText);
+  };
 
-  const parsed = parseTemplateResponse(response, baseText);
-  const cv = await reviewAndRefineStructured(input.reviewModel || "", input.model, baseText, input.job, parsed.cv);
+  const firstRole = (cv: StructuredCv) => {
+    const exp = (cv.sections ?? []).find((s) => s.type === "experience" && /experience|work/i.test(s.heading));
+    const entry = (exp?.entries ?? [])[0];
+    return entry ? `${entry.title} ${entry.meta ?? ""}` : "(none)";
+  };
+  const sourceForGaps = `${baseText}\n${JSON.stringify(input.supportingMaterials)}`;
+  let parsed = await generate("");
+  const gaps = guideGaps(parsed.cv, sourceForGaps);
+  if (gaps.length) {
+    // One corrective pass: regenerate with the concrete list of what a complete
+    // tech resume still needs (only sections the real materials support).
+    const retry = await generate(
+      `\n\nCOMPLETENESS FIX — your previous draft was missing mandatory sections. Regenerate the FULL response and include, using ONLY real content from the materials:\n- ${gaps.join("\n- ")}`
+    );
+    if (guideGaps(retry.cv, sourceForGaps).length < gaps.length) parsed = retry;
+  }
+
+  const cv = await reviewAndRefineStructured(input.reviewModel || "", input.model, baseText, input.supportingMaterials, input.job, parsed.cv);
+  // Refine may improve sections but must never DROP one (e.g. Languages).
+  // Restore any pre-refine section that vanished — deterministically.
+  const norm = (heading: string) => heading.toLowerCase().replace(/[^a-z]/g, "");
+  for (const section of parsed.cv.sections) {
+    const uniqueTypes = ["techstack", "projects", "languages", "pills"];
+    const sameTypeSurvives = cv.sections.some((existing) => existing.type === section.type);
+    const headingSurvives = cv.sections.some((existing) => norm(existing.heading) === norm(section.heading));
+    if ((uniqueTypes.includes(section.type) && !sameTypeSurvives) || (!uniqueTypes.includes(section.type) && !headingSurvives)) {
+      cv.sections.push(section);
+    }
+  }
   return { ...parsed, cv };
 }
 
@@ -700,9 +799,18 @@ async function reviewCvDraft(reviewModel: string, baseText: string, jobDescripti
   }
 }
 
-async function reviewAndRefineText(reviewModel: string, tailorModel: string, baseText: string, job: JobContext, tailoredText: string): Promise<string> {
+// IMPORTANT: both refine helpers must receive the candidate's FULL source of
+// truth (base CV + evidence materials), not just the base CV — otherwise real
+// roles/projects that exist only in newer evidence get flagged UNSUPPORTED by
+// the reviewer and stripped out of the draft.
+function fullSource(baseText: string, materials: SupportingMaterial[]): string {
+  return `${baseText}\n\nEVIDENCE MATERIALS (equally valid, often newer facts):\n${JSON.stringify(materials)}`;
+}
+
+async function reviewAndRefineText(reviewModel: string, tailorModel: string, baseText: string, materials: SupportingMaterial[], job: JobContext, tailoredText: string): Promise<string> {
   if (!reviewModel || reviewModel === tailorModel || tailoredText.trim().length < 40) return tailoredText;
-  const critique = await reviewCvDraft(reviewModel, baseText, job.description, tailoredText);
+  const source = fullSource(baseText, materials);
+  const critique = await reviewCvDraft(reviewModel, source, job.description, tailoredText);
   if (!critique || /^ok\b/i.test(critique)) return tailoredText;
   try {
     const response = await runLlmGuarded({
@@ -710,8 +818,8 @@ async function reviewAndRefineText(reviewModel: string, tailorModel: string, bas
       responseFormat: "text",
       maxTokens: 8000,
       messages: [
-        { role: "system", content: "Improve the TAILORED CV using the reviewer's notes. Use ONLY facts present in the ORIGINAL CV or evidence — never add employers, titles, dates, degrees, certificates, tools, skills, metrics, or achievements not in them. REMOVE anything flagged 'UNSUPPORTED'. ADD the real detail flagged with 'ADD:' (it is backed by the ORIGINAL CV) — expand thin roles into fuller bullets, surface missing real tools/projects — making the CV more thorough and detailed. Keep the same language, headings, and professional identity. Return ONLY the improved CV as plain text — no commentary, no markers." },
-        { role: "user", content: `JOB: ${job.title} at ${job.company}\n${job.description.slice(0, 3000)}\n\nORIGINAL CV:\n${baseText.slice(0, 6000)}\n\nCURRENT TAILORED CV:\n${tailoredText}\n\nREVIEWER NOTES:\n${critique}` }
+        { role: "system", content: "Improve the TAILORED CV using the reviewer's notes. Use ONLY facts present in the ORIGINAL CV + EVIDENCE — never add employers, titles, dates, degrees, certificates, tools, skills, metrics, or achievements not in them (facts appearing only in the evidence are REAL and allowed). REMOVE anything flagged 'UNSUPPORTED'. ADD the real detail flagged with 'ADD:' — expand thin roles into fuller bullets, surface missing real tools/projects — making the CV more thorough and detailed. Keep the same language, headings, and professional identity. Return ONLY the improved CV as plain text — no commentary, no markers." },
+        { role: "user", content: `JOB: ${job.title} at ${job.company}\n${job.description.slice(0, 3000)}\n\nORIGINAL CV + EVIDENCE:\n${source.slice(0, 16000)}\n\nCURRENT TAILORED CV:\n${tailoredText}\n\nREVIEWER NOTES:\n${critique}` }
       ]
     });
     const refined = stripFences(response);
@@ -721,9 +829,10 @@ async function reviewAndRefineText(reviewModel: string, tailorModel: string, bas
   }
 }
 
-async function reviewAndRefineStructured(reviewModel: string, tailorModel: string, baseText: string, job: JobContext, cv: StructuredCv): Promise<StructuredCv> {
+async function reviewAndRefineStructured(reviewModel: string, tailorModel: string, baseText: string, materials: SupportingMaterial[], job: JobContext, cv: StructuredCv): Promise<StructuredCv> {
   if (!reviewModel || reviewModel === tailorModel) return cv;
-  const critique = await reviewCvDraft(reviewModel, baseText, job.description, flattenStructuredCv(cv));
+  const source = fullSource(baseText, materials);
+  const critique = await reviewCvDraft(reviewModel, source, job.description, flattenStructuredCv(cv));
   if (!critique || /^ok\b/i.test(critique)) return cv;
   try {
     const response = await runLlmGuarded({
@@ -731,8 +840,8 @@ async function reviewAndRefineStructured(reviewModel: string, tailorModel: strin
       responseFormat: "text",
       maxTokens: 8000,
       messages: [
-        { role: "system", content: "Improve this CV (a JSON object) using the reviewer's notes. Use ONLY facts present in the ORIGINAL CV or evidence — never add employers, titles, dates, degrees, certificates, tools, skills, metrics, or achievements not in them. REMOVE anything flagged 'UNSUPPORTED'. ADD the real detail flagged with 'ADD:' (it is backed by the ORIGINAL CV) — expand thin roles into 3-6 fuller bullets, add a tools/tech-stack section and real projects when the content supports them — making the CV more thorough. Keep the EXACT same JSON shape (same keys and section types). Return ONLY the improved JSON object, nothing else." },
-        { role: "user", content: `REVIEWER NOTES:\n${critique}\n\nORIGINAL CV:\n${baseText.slice(0, 6000)}\n\nCURRENT CV JSON:\n${JSON.stringify(cv)}` }
+        { role: "system", content: "Improve this CV (a JSON object) using the reviewer's notes. Use ONLY facts present in the ORIGINAL CV + EVIDENCE — never add employers, titles, dates, degrees, certificates, tools, skills, metrics, or achievements not in them (facts appearing only in the evidence are REAL and allowed). REMOVE anything flagged 'UNSUPPORTED'. ADD the real detail flagged with 'ADD:' — expand thin roles into 3-6 fuller bullets, add a tools/tech-stack section and real projects when the content supports them — making the CV more thorough. Keep the EXACT same JSON shape (same keys and section types). Return ONLY the improved JSON object, nothing else." },
+        { role: "user", content: `REVIEWER NOTES:\n${critique}\n\nORIGINAL CV + EVIDENCE:\n${source.slice(0, 16000)}\n\nCURRENT CV JSON:\n${JSON.stringify(cv)}` }
       ]
     });
     const parsed = extractLooseJson<StructuredCv>(response);
@@ -860,7 +969,7 @@ async function generateDocuments(input: {
       ? (input.baseCv as { rawText: string }).rawText
       : JSON.stringify(input.baseCv);
     const currentText = String((parsed.tailoredCv as { rawText?: unknown })?.rawText ?? "");
-    const refinedText = await reviewAndRefineText(input.reviewModel || "", input.model, baseText, input.job, currentText);
+    const refinedText = await reviewAndRefineText(input.reviewModel || "", input.model, baseText, input.supportingMaterials, input.job, currentText);
     if (refinedText !== currentText) {
       parsed.tailoredCv = buildTailoredCv(input.baseCv, refinedText);
     }

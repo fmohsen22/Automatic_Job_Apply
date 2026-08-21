@@ -32,7 +32,7 @@ export const cvTemplates: CvTemplate[] = [
   {
     id: "navy",
     name: "Navy / Energy",
-    description: "Navy header, gold accents, stats band, two-column tech stack. Designed PDF.",
+    description: "Recommended for applications — full tech-resume structure: summary, links, tools, skills, experience, projects, education, certifications, languages.",
     kind: "html",
     render: renderNavyTemplate
   },

@@ -408,6 +408,21 @@ function leakedJobTerms(jobDescription: string, sourceMaterials: string, cvText:
   });
 }
 
+// Deterministic guard: native/bilingual-level language claims the candidate's
+// materials don't literally support (models upgrade "professional German" to
+// "Muttersprache" when the job ad is German — in any language, so a plain
+// regex, not the reviewer, has to catch it).
+function unsupportedNativeClaims(sourceMaterials: string, cvText: string): string[] {
+  const languages = ["german", "deutsch", "english", "englisch", "french", "französisch", "spanish", "italian"];
+  const nativeWords = "(?:native|bilingual|muttersprache|mother\\s*tongue|c2)";
+  const flagged: string[] = [];
+  for (const lang of languages) {
+    const claim = new RegExp(`\\b${nativeWords}\\b[^.\\n]{0,60}\\b${lang}\\b|\\b${lang}\\b[^.\\n]{0,60}\\b${nativeWords}\\b`, "i");
+    if (claim.test(cvText) && !claim.test(sourceMaterials)) flagged.push(lang);
+  }
+  return flagged;
+}
+
 // Ask the cheap reviewer whether the produced CV text contains anything not
 // backed by the candidate's real materials, and merge in the deterministic
 // job-term leak check. Returns UNSUPPORTED lines (empty string when clean).
@@ -416,6 +431,9 @@ async function unsupportedCritique(reviewModel: string, model: string, baseText:
   const lines: string[] = [];
   for (const term of leakedJobTerms(job.description, baseText, cvText)) {
     lines.push(`UNSUPPORTED: "${term}" — this comes from the job ad, not the candidate's materials. Remove it everywhere (including "-style" analogies); if it is a real gap, it belongs in the checklist as "missing".`);
+  }
+  for (const lang of unsupportedNativeClaims(baseText, cvText)) {
+    lines.push(`UNSUPPORTED: a native/bilingual-level claim for "${lang}" — the candidate's materials do NOT state that level. Use their real level verbatim from the materials (e.g. "German — Full Professional Proficiency"); the candidate's native language is whatever the materials say it is.`);
   }
   if (reviewModel && reviewModel !== model) {
     const critique = await reviewCvDraft(reviewModel, baseText, job.description, cvText);

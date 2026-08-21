@@ -38,7 +38,8 @@ const DETAIL_GUIDANCE =
   "  7. PROJECTS / selected work: real projects with impact and technologies.\n" +
   "  8. EDUCATION: relevant degrees with institution and year.\n" +
   "  9. CERTIFICATIONS and 10. LANGUAGES (with the candidate's real proficiency levels, verbatim).\n" +
-  "KEYWORDS: mirror the exact terminology of the job description wherever the candidate genuinely has that skill (recruiters and ATS scanners match those words). Prefer specific and concrete over generic; every detail must trace back to the materials — more detail must never mean invented detail.\n\n";
+  "KEYWORDS: mirror the exact terminology of the job description wherever the candidate genuinely has that skill (recruiters and ATS scanners match those words). Prefer specific and concrete over generic; every detail must trace back to the materials — more detail must never mean invented detail.\n" +
+  "CONFLICTS: when materials disagree on a fact (e.g. one says '5 years' and a newer one says '7+ years'), use the figure from the NEWEST material — the latest profile is the current truth.\n\n";
 
 type ChecklistItem = {
   requirement: string;
@@ -385,7 +386,8 @@ const TEMPLATE_FILL_SYSTEM_PROMPT =
   "You are given the template as numbered SLOTS, each currently holding SAMPLE text (a fake person's details). For EACH slot, infer its purpose from the sample (name, job title, contact line, section heading, summary, a job entry, a bullet, a skill, education, etc.) and replace it with the CANDIDATE'S real, job-tailored content that fits that slot. Replace ALL sample names, contacts, companies and details with the candidate's real ones. Keep pure section HEADINGS (like 'Experience', 'Education', 'Skills') unchanged. Keep each slot's length similar to its sample so the layout still fits.\n\n" +
   "FAITHFULNESS (most important): Use ONLY facts from the candidate's real CV and supporting materials. NEVER invent employers, job titles, dates, degrees, certificates, tools, skills, metrics, or achievements. Never write a specific product, tool, brand, or framework name (e.g. n8n, Zapier, Docker, AWS) unless that exact name appears in the candidate's materials — and never use it as a '-style' analogy either. Rephrasing, reordering, and emphasizing REAL facts is allowed; fabricating is not. If the job requires something the candidate lacks, record it in the checklist as \"missing\" or \"address\" — never put it in the CV or cover letter. If the template has more slots than the candidate has real content, reuse or condense the candidate's real content sensibly — never fabricate. If a slot has no matching real content, use the closest real content or leave it unchanged.\n\n" +
   "DETAIL vs FIT (both matter): Within each slot, use the candidate's strongest, most specific real content — concrete achievements with real metrics and the actual tools/technologies named in their materials, never vague filler. BUT this is a FIXED one-page design: keep EVERY slot AT OR UNDER its sample text's length — if a slot's content would run longer than its sample, trim the least job-relevant detail instead of letting it grow. Overflowing slots push later sections (Education, Certifications) off the page, which is worse than a shorter bullet. LATER SECTIONS ARE MANDATORY: Education, certifications, and languages slots must always keep real content — never sacrifice them for longer bullets. For a longer, more detailed CV the candidate can pick the Navy / Energy template or the Word output.\n\n" +
-  "LANGUAGES: Copy the candidate's real language proficiency levels VERBATIM from their materials (e.g. 'German — Full Professional Proficiency', 'Persian — Native'). NEVER upgrade a level — never call someone a native or fluent speaker of a language their materials don't literally state at that level, no matter what language the job posting is written in.\n\n" +
+  "LANGUAGES: Copy the candidate's real language proficiency levels VERBATIM from their materials (e.g. 'German — Full Professional Proficiency', 'Persian — Native'). NEVER upgrade a level — never call someone a native or fluent speaker of a language their materials don't literally state at that level, no matter what language the job posting is written in.\n" +
+  "CONFLICTS: when materials disagree on a fact (e.g. one says '5 years' and a newer one says '7+ years'), use the figure from the NEWEST material — the latest profile is the current truth.\n\n" +
   "Respond with EXACTLY these three sections, each starting with its marker on its own line:\n\n" +
   SEGMENTS_MARKER + "\n" +
   "One line per slot you fill, in the form: @@<number>@@ <new text>  (use the numbers shown; output a line for every slot that should change).\n\n" +
@@ -415,6 +417,31 @@ function leakedJobTerms(jobDescription: string, sourceMaterials: string, cvText:
   });
 }
 
+// Deterministic guard: impossible date ranges (a tailored CV once rendered
+// "10/2021 to 09/2021"). Any range whose end predates its start is flagged.
+function impossibleDateRanges(cvText: string): string[] {
+  const MONTHS: Record<string, number> = { jan: 1, feb: 2, mar: 3, apr: 4, may: 5, jun: 6, jul: 7, aug: 8, sep: 9, oct: 10, okt: 10, nov: 11, dec: 12, dez: 12 };
+  const toComparable = (token: string): number | null => {
+    const numeric = token.match(/^(0?[1-9]|1[0-2])\/(20[0-3]\d)$/);
+    if (numeric) return Number(numeric[2]) * 12 + Number(numeric[1]);
+    const named = token.match(/^([A-Za-z]{3,9})\.?\s+(20[0-3]\d)$/);
+    if (named) {
+      const month = MONTHS[named[1].slice(0, 3).toLowerCase()];
+      return month ? Number(named[2]) * 12 + month : null;
+    }
+    const yearOnly = token.match(/^(20[0-3]\d)$/);
+    return yearOnly ? Number(yearOnly[1]) * 12 + 6 : null;
+  };
+  const DATE = "(?:[01]?\\d\\/20[0-3]\\d|[A-Za-z]{3,9}\\.?\\s+20[0-3]\\d|20[0-3]\\d)";
+  const flagged: string[] = [];
+  for (const match of cvText.matchAll(new RegExp(`(${DATE})\\s*(?:to|bis|[–—-])\\s*(${DATE})`, "gi"))) {
+    const start = toComparable(match[1].trim());
+    const end = toComparable(match[2].trim());
+    if (start !== null && end !== null && end < start) flagged.push(match[0]);
+  }
+  return flagged;
+}
+
 // Deterministic guard: native/bilingual-level language claims the candidate's
 // materials don't literally support (models upgrade "professional German" to
 // "Muttersprache" when the job ad is German — in any language, so a plain
@@ -441,6 +468,9 @@ async function unsupportedCritique(reviewModel: string, model: string, baseText:
   }
   for (const lang of unsupportedNativeClaims(baseText, cvText)) {
     lines.push(`UNSUPPORTED: a native/bilingual-level claim for "${lang}" — the candidate's materials do NOT state that level. Use their real level verbatim from the materials (e.g. "German — Full Professional Proficiency"); the candidate's native language is whatever the materials say it is.`);
+  }
+  for (const range of impossibleDateRanges(cvText)) {
+    lines.push(`UNSUPPORTED: the date range "${range}" ends before it starts — replace it with the exact real dates from the candidate's materials.`);
   }
   if (reviewModel && reviewModel !== model) {
     const critique = await reviewCvDraft(reviewModel, baseText, job.description, cvText);
@@ -512,16 +542,50 @@ async function fillTemplateDocx(input: {
       .filter((segment) => segment.text.trim().split(/\s+/).length > 3 && !result.replacements.has(segment.index))
       .map((segment) => segment.index);
 
+  // Fixed designs break visually when a slot's text outgrows its sample: short
+  // label slots (skill names next to rating bars, headers) wrap onto a second
+  // line and collide with the template's decorative shapes. Budget per slot:
+  // tight for short labels, more lenient for paragraph slots.
+  const sampleByIndex = new Map(candidates.map((segment) => [segment.index, segment.text.trim()]));
+  // Fixed one-page designs anchor their graphics (skill bars, dividers) to the
+  // page, so text slots must stay at ~the sample's size or everything below
+  // shifts against the artwork.
+  const slotBudget = (sample: string) =>
+    sample.length < 60 ? Math.max(Math.round(sample.length * 1.4), sample.length + 8) : Math.round(sample.length * 1.1) + 15;
+  const overLengthSlots = (result: { replacements: Map<number, string> }) => {
+    const over: Array<{ index: number; budget: number; actual: number }> = [];
+    for (const [index, value] of result.replacements) {
+      const sample = sampleByIndex.get(index);
+      if (!sample) continue;
+      const budget = slotBudget(sample);
+      if (value.length > budget) over.push({ index, budget, actual: value.length });
+    }
+    return over;
+  };
+
   const sourceForReview = `${baseText}\n\nEVIDENCE MATERIALS:\n${JSON.stringify(input.supportingMaterials)}`;
   let parsed = await runFill("");
   for (let attempt = 0; attempt < 2; attempt++) {
     const critique = await unsupportedCritique(input.reviewModel || "", input.model, sourceForReview, input.job, cvTextOf(parsed));
     const missing = unfilledSlots(parsed);
-    if (!critique && !missing.length) break;
+    const over = overLengthSlots(parsed);
+    if (!critique && !missing.length && !over.length) break;
     const fixes: string[] = [];
     if (critique) fixes.push(`CRITICAL FAITHFULNESS FIX — the following were flagged as unsupported/invented. Do NOT include them or anything like them; use ONLY facts present in the candidate's real materials:\n${critique}`);
     if (missing.length) fixes.push(`COMPLETENESS FIX — these slots still contain the template's sample text: ${missing.map((index) => `@@${index}@@`).join(", ")}. Fill EVERY one of them with the candidate's real content (condense or reuse real facts where needed — the sample person's text must never remain in the final CV).`);
+    if (over.length) fixes.push(`LAYOUT FIX — these slots are LONGER than the fixed design allows and their text will collide with the template's graphics. Shorten each to AT MOST the given character count (keep the most job-relevant words): ${over.map((o) => `@@${o.index}@@ ≤ ${o.budget} chars (currently ${o.actual})`).join("; ")}.`);
     parsed = await runFill(`\n\n${fixes.join("\n\n")}`);
+  }
+
+  // Hard fallback: if short label slots are STILL too long, cut at a word
+  // boundary — an abbreviated label beats text hidden under a rating bar.
+  for (const { index, budget } of overLengthSlots(parsed)) {
+    const sample = sampleByIndex.get(index) ?? "";
+    if (sample.length >= 60) continue; // never hard-cut paragraph slots
+    const value = parsed.replacements.get(index) ?? "";
+    const cut = value.slice(0, budget + 1);
+    const lastSpace = cut.lastIndexOf(" ");
+    parsed.replacements.set(index, (lastSpace > budget * 0.5 ? cut.slice(0, lastSpace) : cut.slice(0, budget)).replace(/[,;:&/-]\s*$/, "").trim());
   }
 
   const replacements = parsed.replacements;
@@ -786,7 +850,7 @@ async function reviewCvDraft(reviewModel: string, baseText: string, jobDescripti
           content:
             "You are a sharp CV reviewer. Compare the candidate's ORIGINAL CV and the TAILORED CV against the JOB. " +
             "Give concrete improvement notes: stronger wording, better ordering, conciseness, and keywords from the job description. " +
-            "CRUCIAL — truthfulness check first: verify every employer, job title, date, degree, certificate, tool, skill, metric, and achievement in the TAILORED CV against the ORIGINAL CV. In particular: (a) list every specific product / tool / technology / framework / brand name that appears in the TAILORED CV (e.g. n8n, Zapier, Docker, AWS) and, for each one NOT written verbatim in the ORIGINAL CV, output a line 'UNSUPPORTED: <name>' — including names used as an analogy or with a '-style' suffix; (b) check every LANGUAGE PROFICIENCY claim (native / bilingual / fluent / C1 / Muttersprache …) — if the TAILORED CV states a higher level than the ORIGINAL CV literally does (e.g. 'native German' when the original says 'German — professional proficiency'), flag it 'UNSUPPORTED:' with the correct real level. Flag any other invented or unsupported claim the same way. Rephrased or reordered real facts are fine; new facts are not. " +
+            "CRUCIAL — truthfulness check first: verify every employer, job title, date, degree, certificate, tool, skill, metric, and achievement in the TAILORED CV against the ORIGINAL CV. In particular: (a) list every specific product / tool / technology / framework / brand name that appears in the TAILORED CV (e.g. n8n, Zapier, Docker, AWS) and, for each one NOT written verbatim in the ORIGINAL CV, output a line 'UNSUPPORTED: <name>' — including names used as an analogy or with a '-style' suffix; (b) check every LANGUAGE PROFICIENCY claim (native / bilingual / fluent / C1 / Muttersprache …) — if the TAILORED CV states a higher level than the ORIGINAL CV literally does (e.g. 'native German' when the original says 'German — professional proficiency'), flag it 'UNSUPPORTED:' with the correct real level; (c) check every DATE RANGE — start and end months/years must match the materials exactly; flag altered, swapped, or impossible dates 'UNSUPPORTED:' with the correct real dates. Flag any other invented or unsupported claim the same way. Rephrased or reordered real facts are fine; new facts are not. " +
             "Then a COMPLETENESS check: if the ORIGINAL CV (or evidence) contains real, relevant experience, tools, projects, achievements, or metrics that are MISSING or under-described in the TAILORED CV, flag each on its own line starting with 'ADD:' naming the real detail to surface (e.g. a real tool to list, a role that needs more bullets, a project to include). A thorough, detailed CV is the goal — flag thinness. Only surface detail that is genuinely in the ORIGINAL CV or evidence; never suggest inventing anything. " +
             "Bullet points only, no preamble. If it is already excellent, faithful, and thorough, reply with exactly: OK."
         },

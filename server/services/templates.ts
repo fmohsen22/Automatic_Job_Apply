@@ -44,8 +44,8 @@ export const cvTemplates: CvTemplate[] = [
   { id: "ats-modern", name: "ATS Modern", description: "Clean ATS-friendly layout with a modern accent. No photo.", kind: "docx", file: "ats-modern.docx" },
   { id: "two-column", name: "Two-Column", description: "Sidebar with contact/skills and a main column for experience. No photo.", kind: "docx", file: "two-column.docx" },
   { id: "infographic", name: "Modern Infographic", description: "Designed layout with icons and visual sections. No photo.", kind: "docx", file: "infographic.docx" },
-  { id: "photo-modern", name: "Photo — Modern", description: "Modern design with a profile photo. Upload a photo for best results.", kind: "docx", file: "photo-modern.docx", photo: { parts: ["word/media/image1.jpg", "word/media/image2.jpeg"], size: 300 } },
-  { id: "photo-profile", name: "Photo — Profile", description: "Profile-style design with a photo. Upload a photo for best results.", kind: "docx", file: "photo-profile.docx", photo: { parts: ["word/media/image1.jpg", "word/media/image2.jpeg"], size: 212 } }
+  { id: "photo-modern", name: "Photo — Modern", description: "Modern photo design with skill bars. Heads-up: the auto-PDF misaligns the bars (LibreOffice quirk) — the Word file is correct; open it and Save as PDF. Prefer Photo — Profile for a clean auto-PDF.", kind: "docx", file: "photo-modern.docx", photo: { parts: ["word/media/image1.jpg", "word/media/image2.jpeg"], size: 300 } },
+  { id: "photo-profile", name: "Photo — Profile", description: "Profile-style photo design — renders cleanly to PDF. The recommended photo template.", kind: "docx", file: "photo-profile.docx", photo: { parts: ["word/media/image1.jpg", "word/media/image2.jpeg"], size: 212 } }
 ];
 
 export function getTemplate(id: string): CvTemplate | undefined {

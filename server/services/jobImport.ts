@@ -29,6 +29,15 @@ export async function fetchJobPage(url: string, timeoutMs = 15000): Promise<Extr
     if (fromLinkedIn) return fromLinkedIn;
   }
 
+  // Ashby job pages (jobs.ashbyhq.com/<slug>/<jobId>) are JavaScript shells with
+  // no posting content in their HTML. Ashby exposes a public posting API that
+  // returns the whole board as clean JSON, so pull the job straight from there.
+  const ashby = ashbyRef(url);
+  if (ashby) {
+    const fromAshby = await fetchAshbyJob(ashby.slug, ashby.jobId, timeoutMs);
+    if (fromAshby) return fromAshby;
+  }
+
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
@@ -91,6 +100,71 @@ async function fetchLinkedInJob(jobId: string, timeoutMs = 12000): Promise<Extra
     const description = descMatch ? normalize(decode(htmlToText(descMatch[1]))) : "";
     if (!description || description.length < 60) return null;
     return { title: title || "LinkedIn job", company: company || "Unknown company", description: description.slice(0, 8000) };
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+// Recognize an Ashby job URL and split out the board <slug> and <jobId>. The URL
+// looks like https://jobs.ashbyhq.com/<slug>/<jobId>?embed=js&locationId=... —
+// any query string is ignored, and a non-UUID second segment (e.g. a listing
+// page) is rejected so we don't treat it as a job.
+function ashbyRef(url: string): { slug: string; jobId: string } | null {
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return null;
+  }
+  if (!/(^|\.)ashbyhq\.com$/i.test(parsed.hostname)) return null;
+  const segments = parsed.pathname.split("/").filter(Boolean);
+  if (segments.length < 2) return null;
+  const [slug, jobId] = segments;
+  if (!UUID_RE.test(jobId)) return null;
+  return { slug, jobId };
+}
+
+type AshbyJob = {
+  id?: string;
+  title?: string;
+  location?: string;
+  jobUrl?: string;
+  descriptionPlain?: string;
+  descriptionHtml?: string;
+};
+
+// Pull one job from an Ashby board's public posting API. Works for ANY board
+// (the slug drives the endpoint), so it is not specific to a single company.
+async function fetchAshbyJob(slug: string, jobId: string, timeoutMs = 15000): Promise<ExtractedJob | null> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const endpoint = `https://api.ashbyhq.com/posting-api/job-board/${encodeURIComponent(slug)}?includeCompensation=true`;
+    const response = await fetch(endpoint, {
+      redirect: "follow",
+      signal: controller.signal,
+      headers: { "User-Agent": USER_AGENT, Accept: "application/json" }
+    });
+    if (!response.ok) return null;
+    const data = (await response.json()) as { jobs?: AshbyJob[] };
+    const jobs = Array.isArray(data.jobs) ? data.jobs : [];
+    const match =
+      jobs.find((job) => job.id === jobId) ||
+      jobs.find((job) => typeof job.jobUrl === "string" && job.jobUrl.includes(jobId));
+    if (!match) return null;
+    const description = normalize(match.descriptionPlain?.trim() || decode(htmlToText(match.descriptionHtml || "")));
+    if (!description || description.length < 40) return null;
+    const company = prettifySlug(slug);
+    return {
+      title: (match.title || "").trim() || company,
+      company,
+      location: (match.location || "").trim() || undefined,
+      description: description.slice(0, 8000)
+    };
   } catch {
     return null;
   } finally {

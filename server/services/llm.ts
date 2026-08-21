@@ -43,12 +43,20 @@ export async function runLlm(request: LlmRequest) {
   }
 
   const client = await createLlmClient();
-  const response = await client.chat.completions.create({
+  const body = {
     model: request.model,
     messages: request.messages,
     max_tokens: request.maxTokens,
-    response_format: request.responseFormat === "json" ? { type: "json_object" } : undefined
-  });
+    response_format: request.responseFormat === "json" ? { type: "json_object" } : undefined,
+    // These are extraction/tailoring tasks, not puzzles. Reasoning-capable
+    // models (e.g. Claude Sonnet 5) otherwise spend most of the token budget on
+    // hidden reasoning, which truncates the actual CV output and is very slow.
+    // OpenRouter passes this through; non-reasoning models ignore it.
+    reasoning: { enabled: false }
+  };
+  const response = (await client.chat.completions.create(
+    body as unknown as Parameters<typeof client.chat.completions.create>[0]
+  )) as { choices?: Array<{ message?: { content?: string } }> };
 
-  return response.choices[0]?.message?.content || "";
+  return response.choices?.[0]?.message?.content || "";
 }

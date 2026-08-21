@@ -23,6 +23,16 @@ const CHECKLIST_MARKER = "<<<CHECKLIST_JSON>>>";
 const SEGMENTS_MARKER = "<<<CV_SEGMENTS>>>";
 const CV_JSON_MARKER = "<<<CV_JSON>>>";
 
+// Guidance that makes the tailored CV thorough and recruiter-ready (tech-resume
+// best practice) WITHOUT ever loosening the faithfulness rules above it — detail
+// must always trace back to the candidate's real materials, never be invented.
+const DETAIL_GUIDANCE =
+  "COMPLETENESS & DETAIL (write a strong, thorough CV — never a sparse one): Draw out ALL of the candidate's real, relevant experience from the CV and supporting materials. A single page is fine only when that is genuinely all the real content supports; otherwise use up to TWO full pages rather than dropping real, relevant detail. Apply tech-resume best practice:\n" +
+  "- Include every section the candidate's REAL materials support: a short professional summary; relevant links (LinkedIn / GitHub / portfolio) when present; a dedicated TOOLS / TECH STACK section listing the candidate's real tools, languages, frameworks and platforms grouped by category; a skills section; detailed WORK EXPERIENCE; a PROJECTS / selected-work section for real projects; education; certifications; languages.\n" +
+  "- For EACH real role, write 3-6 specific bullet points. Start each with a strong action verb (Built, Automated, Led, Reduced, Designed, Delivered, Migrated…) and include the real metric or outcome whenever the materials provide one (numbers, %, time saved, scale, team size). Never compress a rich role into one or two vague lines.\n" +
+  "- Pull EVERY real tool, technology, framework and language named anywhere in the materials into the tools/skills sections, and mirror the exact terminology the job description uses wherever the candidate genuinely has that skill (recruiters and ATS scanners match on those keywords).\n" +
+  "- Prefer specific and concrete over generic. Expand and elaborate on REAL facts — this is about surfacing detail the candidate already has, not padding. Every added detail must trace back to the materials; more detail must never mean invented detail.\n\n";
+
 type ChecklistItem = {
   requirement: string;
   status: "met" | "missing" | "address";
@@ -118,6 +128,7 @@ export async function prepareDocumentsForJob(jobId: string, instructions?: strin
   } else if (gallery?.kind === "docx") {
     const fill = await fillTemplateDocx({
       model,
+      reviewModel,
       templateDocx: await readFile(docxTemplatePath(gallery.file)),
       baseCv,
       supportingMaterials: supporting,
@@ -137,6 +148,7 @@ export async function prepareDocumentsForJob(jobId: string, instructions?: strin
   } else if (canUseDocx && (templateId === "word" || !templateId)) {
     const docx = await generateTailoredDocx({
       model,
+      reviewModel,
       originalDocx: await readFile(templateCv.assetPath as string),
       supportingMaterials: supporting,
       job: jobContext,
@@ -281,6 +293,7 @@ export function presentDocSet<T extends {
 // no large JSON-embedded blob to mis-escape.
 async function generateTailoredDocx(input: {
   model: string;
+  reviewModel?: string;
   originalDocx: Buffer;
   supportingMaterials: SupportingMaterial[];
   job: JobContext;
@@ -293,60 +306,68 @@ async function generateTailoredDocx(input: {
   }
 
   const numberedSegments = candidates.map((segment) => `@@${segment.index}@@ ${segment.text}`).join("\n");
-  const userPayload = [
-    `JOB TITLE: ${input.job.title}`,
-    `COMPANY: ${input.job.company}`,
-    `LOCATION: ${input.job.location ?? "Not specified"}`,
-    "",
-    "JOB DESCRIPTION:",
-    input.job.description,
-    "",
-    "SUPPORTING MATERIALS (facts about the candidate, use as evidence only):",
-    JSON.stringify(input.supportingMaterials),
-    "",
-    `USER INSTRUCTIONS: ${input.instructions || "(none)"}`,
-    "",
-    "CV SEGMENTS (rewrite the wording of the ones that should better match the job; keep the same numbers):",
-    numberedSegments
-  ].join("\n");
+  const baseText = candidates.map((segment) => segment.text).join("\n");
 
-  const response = await runLlmGuarded({
-    model: input.model,
-    responseFormat: "text",
-    maxTokens: 8000,
-    messages: [
-      {
-        role: "system",
-        content:
-          "You tailor a candidate's existing CV to one job WITHOUT changing its layout.\n\n" +
-          "FAITHFULNESS (most important): Use ONLY facts present in the CV segments and supporting materials. Keep the candidate's real professional identity, headline, and career exactly as written. Do NOT rebrand them into a different profession or invent a new role title to match the job (for example, never relabel a petroleum / AI-automation engineer as a 'UI/UX Engineer'). NEVER invent or imply employers, job titles, dates, degrees, certificates, tools, skills, metrics, or achievements the candidate does not already have in the materials. Rephrasing, reordering, and emphasizing REAL facts is allowed; fabricating is not. If the job requires something the candidate lacks, record it in the checklist as \"missing\" or \"address\" — never add it to the CV or cover letter. Prefer MINIMAL edits: only change wording where it genuinely surfaces existing, relevant strengths for this job. When in doubt, leave the segment unchanged.\n\n" +
-          "The CV is given as numbered text segments (one per paragraph). Rewrite ONLY the wording of segments that should better match the job. Keep each rewritten segment roughly the same length and on a SINGLE line. Do not change the person's name, contact details, dates, or company names. If a segment should stay as-is, leave it out of your output.\n\n" +
-          "Respond with EXACTLY these three sections, each starting with its marker on its own line, and nothing else:\n\n" +
-          `${SEGMENTS_MARKER}\n` +
-          "One line per changed segment, in the form: @@<number>@@ <rewritten text>  (use the numbers shown in the input; output only changed segments).\n\n" +
-          `${COVER_MARKER}\n` +
-          "A concise, specific cover letter for this job, as plain text. Only reference real experience from the materials; do not fabricate roles, projects, or skills.\n\n" +
-          `${CHECKLIST_MARKER}\n` +
-          'A valid JSON array. Each element is an object with keys: "requirement" (string), "status" (one of "met", "missing", "address"), "evidence" (string), "plan" (string).'
-      },
-      { role: "user", content: userPayload }
-    ]
-  });
+  const runTailor = async (extraInstruction: string) => {
+    const userPayload = [
+      `JOB TITLE: ${input.job.title}`,
+      `COMPANY: ${input.job.company}`,
+      `LOCATION: ${input.job.location ?? "Not specified"}`,
+      "",
+      "JOB DESCRIPTION:",
+      input.job.description,
+      "",
+      "SUPPORTING MATERIALS (facts about the candidate, use as evidence only):",
+      JSON.stringify(input.supportingMaterials),
+      "",
+      `USER INSTRUCTIONS: ${input.instructions || "(none)"}${extraInstruction}`,
+      "",
+      "CV SEGMENTS (rewrite the wording of the ones that should better match the job; keep the same numbers):",
+      numberedSegments
+    ].join("\n");
+    const response = await runLlmGuarded({
+      model: input.model,
+      responseFormat: "text",
+      maxTokens: 8000,
+      messages: [
+        {
+          role: "system",
+          content:
+            "You tailor a candidate's existing CV to one job WITHOUT changing its layout.\n\n" +
+            "FAITHFULNESS (most important): Use ONLY facts present in the CV segments and supporting materials. Keep the candidate's real professional identity, headline, and career exactly as written. Do NOT rebrand them into a different profession or invent a new role title to match the job (for example, never relabel a petroleum / AI-automation engineer as a 'UI/UX Engineer'). NEVER invent or imply employers, job titles, dates, degrees, certificates, tools, skills, metrics, or achievements the candidate does not already have in the materials — do not add tool names, product names, or '-style' analogies that are not literally in the materials. Rephrasing, reordering, and emphasizing REAL facts is allowed; fabricating is not. If the job requires something the candidate lacks, record it in the checklist as \"missing\" or \"address\" — never add it to the CV or cover letter.\n\n" +
+            "The CV is given as numbered text segments (one per paragraph). Rewrite the wording of segments to be more detailed, specific, and quantified where the candidate's real materials support it (expand thin bullets into fuller ones using real facts), while keeping the layout, name, contact details, dates, and company names unchanged. Keep each rewritten segment on a SINGLE line. If a segment should stay as-is, leave it out of your output. Do NOT insert any <<<MARKER>>> tokens or new section headers into a segment.\n\n" +
+            "Respond with EXACTLY these three sections, each starting with its marker on its own line, and nothing else:\n\n" +
+            `${SEGMENTS_MARKER}\n` +
+            "One line per changed segment, in the form: @@<number>@@ <rewritten text>  (use the numbers shown in the input; output only changed segments).\n\n" +
+            `${COVER_MARKER}\n` +
+            "A concise, specific cover letter for this job, as plain text. Only reference real experience from the materials; do not fabricate roles, projects, or skills.\n\n" +
+            `${CHECKLIST_MARKER}\n` +
+            'A valid JSON array. Each element is an object with keys: "requirement" (string), "status" (one of "met", "missing", "address"), "evidence" (string), "plan" (string).'
+        },
+        { role: "user", content: userPayload }
+      ]
+    });
+    return parseDocxResponse(response, segments);
+  };
+  const cvTextOf = (parsed: { replacements: Map<number, string> }) =>
+    segments.map((segment) => parsed.replacements.get(segment.index) ?? segment.text).filter((line) => line.trim().length > 0).join("\n");
 
-  const parsed = parseDocxResponse(response, segments);
+  const sourceForReview = `${baseText}\n\nEVIDENCE MATERIALS:\n${JSON.stringify(input.supportingMaterials)}`;
+  let parsed = await runTailor("");
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const critique = await unsupportedCritique(input.reviewModel || "", input.model, sourceForReview, input.job, cvTextOf(parsed));
+    if (!critique) break;
+    parsed = await runTailor(`\n\nCRITICAL FAITHFULNESS FIX — the following were flagged as unsupported/invented. Do NOT include them or anything like them; use ONLY facts present in the candidate's real materials:\n${critique}`);
+  }
+
   const replacements = parsed.replacements;
   const docxBuffer = replacements.size
     ? applyDocxReplacements(input.originalDocx, replacements)
     : input.originalDocx;
 
-  const cvText = segments
-    .map((segment) => replacements.get(segment.index) ?? segment.text)
-    .filter((line) => line.trim().length > 0)
-    .join("\n");
-
   return {
     docxBuffer,
-    cvText,
+    cvText: cvTextOf(parsed),
     coverLetter: parsed.coverLetter,
     checklist: parsed.checklist
   };
@@ -355,7 +376,8 @@ async function generateTailoredDocx(input: {
 const TEMPLATE_FILL_SYSTEM_PROMPT =
   "You fill a CV template with a candidate's real content, tailored to one job.\n\n" +
   "You are given the template as numbered SLOTS, each currently holding SAMPLE text (a fake person's details). For EACH slot, infer its purpose from the sample (name, job title, contact line, section heading, summary, a job entry, a bullet, a skill, education, etc.) and replace it with the CANDIDATE'S real, job-tailored content that fits that slot. Replace ALL sample names, contacts, companies and details with the candidate's real ones. Keep pure section HEADINGS (like 'Experience', 'Education', 'Skills') unchanged. Keep each slot's length similar to its sample so the layout still fits.\n\n" +
-  "FAITHFULNESS (most important): Use ONLY facts from the candidate's real CV and supporting materials. NEVER invent employers, job titles, dates, degrees, certificates, tools, skills, metrics, or achievements. Rephrasing, reordering, and emphasizing REAL facts is allowed; fabricating is not. If the job requires something the candidate lacks, record it in the checklist as \"missing\" or \"address\" — never put it in the CV or cover letter. If the template has more slots than the candidate has real content, reuse or condense the candidate's real content sensibly — never fabricate. If a slot has no matching real content, use the closest real content or leave it unchanged.\n\n" +
+  "FAITHFULNESS (most important): Use ONLY facts from the candidate's real CV and supporting materials. NEVER invent employers, job titles, dates, degrees, certificates, tools, skills, metrics, or achievements. Never write a specific product, tool, brand, or framework name (e.g. n8n, Zapier, Docker, AWS) unless that exact name appears in the candidate's materials — and never use it as a '-style' analogy either. Rephrasing, reordering, and emphasizing REAL facts is allowed; fabricating is not. If the job requires something the candidate lacks, record it in the checklist as \"missing\" or \"address\" — never put it in the CV or cover letter. If the template has more slots than the candidate has real content, reuse or condense the candidate's real content sensibly — never fabricate. If a slot has no matching real content, use the closest real content or leave it unchanged.\n\n" +
+  "DETAIL: Within each slot, use the candidate's strongest, most specific real content — concrete achievements with real metrics and the actual tools/technologies named in their materials, rather than generic phrasing. Fill bullet and skill slots with substantive real detail (mirroring the job's keywords where the candidate genuinely has that skill), never vague filler. This designed template has a fixed number of slots, so it stays close to one page; for a longer, more detailed CV the candidate can pick the Navy / Energy template or the plain-text / Word output.\n\n" +
   "Respond with EXACTLY these three sections, each starting with its marker on its own line:\n\n" +
   SEGMENTS_MARKER + "\n" +
   "One line per slot you fill, in the form: @@<number>@@ <new text>  (use the numbers shown; output a line for every slot that should change).\n\n" +
@@ -366,8 +388,44 @@ const TEMPLATE_FILL_SYSTEM_PROMPT =
 
 // Pour the candidate's tailored content into a designed .docx template (whose
 // slots currently hold sample text), keeping the template's exact layout.
+// Deterministic guard: brand/tool-looking tokens (contain a digit or inner
+// capitals, e.g. n8n, HubSpot, GPT-4) that the JOB description mentions and the
+// tailored CV adopted, but that appear NOWHERE in the candidate's materials.
+// This is the classic fabrication pattern — the model mirrors a required tool
+// from the job ad the candidate doesn't have.
+function leakedJobTerms(jobDescription: string, sourceMaterials: string, cvText: string): string[] {
+  const tokens = new Set(
+    (jobDescription.match(/\b[A-Za-z][A-Za-z0-9.+#-]{2,}\b/g) || []).filter(
+      (token) => /\d/.test(token) || /^[a-z]+[A-Z]/.test(token) || /^[A-Z][a-z]+[A-Z]/.test(token)
+    )
+  );
+  const source = sourceMaterials.toLowerCase();
+  const tailored = cvText.toLowerCase();
+  return [...tokens].filter((token) => {
+    const needle = token.toLowerCase();
+    return tailored.includes(needle) && !source.includes(needle);
+  });
+}
+
+// Ask the cheap reviewer whether the produced CV text contains anything not
+// backed by the candidate's real materials, and merge in the deterministic
+// job-term leak check. Returns UNSUPPORTED lines (empty string when clean).
+async function unsupportedCritique(reviewModel: string, model: string, baseText: string, job: JobContext, cvText: string): Promise<string> {
+  if (cvText.trim().length < 40) return "";
+  const lines: string[] = [];
+  for (const term of leakedJobTerms(job.description, baseText, cvText)) {
+    lines.push(`UNSUPPORTED: "${term}" — this comes from the job ad, not the candidate's materials. Remove it everywhere (including "-style" analogies); if it is a real gap, it belongs in the checklist as "missing".`);
+  }
+  if (reviewModel && reviewModel !== model) {
+    const critique = await reviewCvDraft(reviewModel, baseText, job.description, cvText);
+    lines.push(...critique.split("\n").filter((line) => /^\s*UNSUPPORTED:/i.test(line)));
+  }
+  return lines.join("\n").trim();
+}
+
 async function fillTemplateDocx(input: {
   model: string;
+  reviewModel?: string;
   templateDocx: Buffer;
   baseCv: unknown;
   supportingMaterials: SupportingMaterial[];
@@ -385,47 +443,53 @@ async function fillTemplateDocx(input: {
     ? (input.baseCv as { rawText: string }).rawText
     : JSON.stringify(input.baseCv);
 
-  const userPayload = [
-    `JOB TITLE: ${input.job.title}`,
-    `COMPANY: ${input.job.company}`,
-    `LOCATION: ${input.job.location ?? "Not specified"}`,
-    "",
-    "JOB DESCRIPTION:",
-    input.job.description,
-    "",
-    "CANDIDATE'S REAL CV (the only source of facts):",
-    baseText,
-    "",
-    "SUPPORTING MATERIALS:",
-    JSON.stringify(input.supportingMaterials),
-    "",
-    `USER INSTRUCTIONS: ${input.instructions || "(none)"}`,
-    "",
-    "CV TEMPLATE SLOTS (each holds SAMPLE text — replace with the candidate's real, tailored content that fits the slot):",
-    numbered
-  ].join("\n");
+  const runFill = async (extraInstruction: string) => {
+    const userPayload = [
+      `JOB TITLE: ${input.job.title}`,
+      `COMPANY: ${input.job.company}`,
+      `LOCATION: ${input.job.location ?? "Not specified"}`,
+      "",
+      "JOB DESCRIPTION:",
+      input.job.description,
+      "",
+      "CANDIDATE'S REAL CV (the only source of facts):",
+      baseText,
+      "",
+      "SUPPORTING MATERIALS:",
+      JSON.stringify(input.supportingMaterials),
+      "",
+      `USER INSTRUCTIONS: ${input.instructions || "(none)"}${extraInstruction}`,
+      "",
+      "CV TEMPLATE SLOTS (each holds SAMPLE text — replace with the candidate's real, tailored content that fits the slot):",
+      numbered
+    ].join("\n");
+    const response = await runLlmGuarded({
+      model: input.model,
+      responseFormat: "text",
+      maxTokens: 8000,
+      messages: [
+        { role: "system", content: TEMPLATE_FILL_SYSTEM_PROMPT },
+        { role: "user", content: userPayload }
+      ]
+    });
+    return parseDocxResponse(response, segments);
+  };
+  const cvTextOf = (parsed: { replacements: Map<number, string> }) =>
+    segments.map((segment) => parsed.replacements.get(segment.index) ?? segment.text).filter((line) => line.trim().length > 0).join("\n");
 
-  const response = await runLlmGuarded({
-    model: input.model,
-    responseFormat: "text",
-    maxTokens: 8000,
-    messages: [
-      { role: "system", content: TEMPLATE_FILL_SYSTEM_PROMPT },
-      { role: "user", content: userPayload }
-    ]
-  });
+  const sourceForReview = `${baseText}\n\nEVIDENCE MATERIALS:\n${JSON.stringify(input.supportingMaterials)}`;
+  let parsed = await runFill("");
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const critique = await unsupportedCritique(input.reviewModel || "", input.model, sourceForReview, input.job, cvTextOf(parsed));
+    if (!critique) break;
+    parsed = await runFill(`\n\nCRITICAL FAITHFULNESS FIX — the following were flagged as unsupported/invented. Do NOT include them or anything like them; use ONLY facts present in the candidate's real materials:\n${critique}`);
+  }
 
-  const parsed = parseDocxResponse(response, segments);
   const replacements = parsed.replacements;
   const docxBuffer = replacements.size
     ? applyDocxReplacements(input.templateDocx, replacements)
     : input.templateDocx;
-  const cvText = segments
-    .map((segment) => replacements.get(segment.index) ?? segment.text)
-    .filter((line) => line.trim().length > 0)
-    .join("\n");
-
-  return { docxBuffer, cvText, coverLetter: parsed.coverLetter, checklist: parsed.checklist };
+  return { docxBuffer, cvText: cvTextOf(parsed), coverLetter: parsed.coverLetter, checklist: parsed.checklist };
 }
 
 function parseDocxResponse(response: string, segments: Array<{ index: number; text: string }>) {
@@ -461,9 +525,13 @@ function parseDocxResponse(response: string, segments: Array<{ index: number; te
       replacements.set(lastIndex, `${replacements.get(lastIndex) ?? ""} ${line.trim()}`.trim());
     }
   }
-  // Drop no-op or emptied replacements so we never blank out a real paragraph.
+  // Strip any stray <<<MARKER>>> tokens the model may have invented inside a
+  // rewritten paragraph (e.g. a made-up <<<PROJECTS_SECTION>>>), then drop no-op
+  // or emptied replacements so we never blank out a real paragraph.
   for (const [index, value] of replacements) {
-    if (!value.trim()) replacements.delete(index);
+    const cleaned = value.replace(/<<<[^>]*>>>/g, " ").replace(/\s{2,}/g, " ").trim();
+    if (!cleaned) replacements.delete(index);
+    else if (cleaned !== value) replacements.set(index, cleaned);
   }
 
   const checklist = extractLooseJson<ChecklistItem[]>(checklistRaw);
@@ -494,7 +562,8 @@ async function runLlmGuarded(request: Parameters<typeof runLlm>[0]) {
 const TEMPLATE_SYSTEM_PROMPT =
   "You convert a candidate's real CV into structured JSON and tailor it to one job.\n\n" +
   "FAITHFULNESS (most important): Use ONLY facts present in the candidate's CV and supporting materials. Keep the candidate's real professional identity, role, employers, dates, and facts exactly. Do NOT rebrand them into a different profession or invent employers, titles, dates, degrees, certificates, tools, skills, metrics, or achievements. Reordering and rephrasing real content to emphasize what is most relevant to this job is allowed; fabricating is not.\n" +
-  "STRICT — no new tools/skills: Do NOT add any tool, technology, framework, library, certification, or skill that is not LITERALLY written in the candidate's materials — not even closely related ones (e.g. do NOT add 'Anthropic' just because 'OpenAI' is present; do NOT add 'Terraform', 'AWS', 'Kubernetes', or '-ready'/'-capable'/'-friendly' qualifiers). Copy skill names and tech-stack items verbatim from the source; never expand, infer, round up, or pad a list. The same rule applies to the summary, headline, and stats. If the job requires a tool or qualification the candidate lacks, put it in the checklist as 'missing' or 'address' — never in the CV or cover letter.\n\n" +
+  "STRICT — no new tools/skills: Do NOT add any tool, technology, framework, library, product, brand, certification, or skill that is not LITERALLY written in the candidate's materials — not even closely related ones or as a '-style' analogy (e.g. do NOT add 'Anthropic' just because 'OpenAI' is present; do NOT add 'n8n', 'Zapier', 'Terraform', 'AWS', 'Kubernetes', or '-ready'/'-capable'/'-friendly'/'-style' qualifiers). Copy skill names and tech-stack items verbatim from the source; never expand, infer, round up, or pad a list. The same rule applies to the summary, headline, and stats. If the job requires a tool or qualification the candidate lacks, put it in the checklist as 'missing' or 'address' — never in the CV or cover letter.\n\n" +
+  DETAIL_GUIDANCE +
   "Respond with EXACTLY these three sections, each starting with its marker on its own line, and nothing else:\n\n" +
   CV_JSON_MARKER + "\n" +
   "A single valid JSON object with this shape:\n" +
@@ -502,11 +571,11 @@ const TEMPLATE_SYSTEM_PROMPT =
   "Section types and their fields:\n" +
   '  - "pills":      { "pills": string[] }            // short items joined inline, e.g. clients / sectors\n' +
   '  - "bullets":    { "bullets": [{"lead"?: string, "text": string}] }   // impact points, certifications\n' +
-  '  - "techstack":  { "rows": [{"label": string, "value": string}] }     // skills grouped by category\n' +
-  '  - "experience": { "entries": [{"title": string, "meta"?: string, "bullets": [{"lead"?: string, "text": string}]}] }   // jobs AND education\n' +
-  '  - "projects":   { "entries": [{"title": string, "description": string, "tags"?: string}] }\n' +
+  '  - "techstack":  { "rows": [{"label": string, "value": string}] }     // TOOLS / TECH STACK grouped by category (Languages, Test Automation, CI/CD, Cloud…)\n' +
+  '  - "experience": { "entries": [{"title": string, "meta"?: string, "bullets": [{"lead"?: string, "text": string}]}] }   // jobs AND education; 3-6 detailed bullets per real role\n' +
+  '  - "projects":   { "entries": [{"title": string, "description": string, "tags"?: string}] }   // real projects with their impact/metrics\n' +
   '  - "languages":  { "items": [{"label": string, "value"?: string}] }\n' +
-  "Include the candidate's real sections (e.g. clients/sectors, impact, skills/tech stack, experience, selected projects, education, certifications, languages). 3-4 short stats tiles. Keep it strictly valid JSON.\n\n" +
+  "Build a COMPLETE CV from the candidate's real content: put contact/links in \"contact\"; a professional \"summary\"; 3-4 real \"stats\" tiles; a \"techstack\" TOOLS section grouping their real tools; a rich \"experience\" section with 3-6 substantive bullets per role; a \"projects\" section for real selected work; plus education, certifications, and languages when present. Keep it strictly valid JSON.\n\n" +
   COVER_MARKER + "\n" +
   "A concise, specific cover letter as plain text. Only reference real experience.\n\n" +
   CHECKLIST_MARKER + "\n" +
@@ -547,7 +616,7 @@ async function generateTemplateCv(input: {
   const response = await runLlmGuarded({
     model: input.model,
     responseFormat: "text",
-    maxTokens: 8000,
+    maxTokens: 12000,
     messages: [
       { role: "system", content: TEMPLATE_SYSTEM_PROMPT },
       { role: "user", content: userPayload }
@@ -592,17 +661,18 @@ async function reviewCvDraft(reviewModel: string, baseText: string, jobDescripti
     const response = await runLlm({
       model: reviewModel,
       responseFormat: "text",
-      maxTokens: 800,
+      maxTokens: 1400,
       messages: [
         {
           role: "system",
           content:
             "You are a sharp CV reviewer. Compare the candidate's ORIGINAL CV and the TAILORED CV against the JOB. " +
-            "Give 3-7 short, concrete improvement notes: stronger wording, better ordering, real relevant experience to surface, conciseness, and keywords from the job description. " +
-            "CRUCIAL — truthfulness check first: verify every employer, job title, date, degree, certificate, tool, skill, metric, and achievement in the TAILORED CV against the ORIGINAL CV. Flag each invented or unsupported claim on its own line starting with 'UNSUPPORTED:' and say to remove it. Rephrased or reordered real facts are fine; new facts are not. " +
-            "Bullet points only, no preamble. If it is already excellent and faithful, reply with exactly: OK."
+            "Give concrete improvement notes: stronger wording, better ordering, conciseness, and keywords from the job description. " +
+            "CRUCIAL — truthfulness check first: verify every employer, job title, date, degree, certificate, tool, skill, metric, and achievement in the TAILORED CV against the ORIGINAL CV. In particular, list every specific product / tool / technology / framework / brand name that appears in the TAILORED CV (e.g. n8n, Zapier, Docker, AWS) and, for each one NOT written verbatim in the ORIGINAL CV, output a line 'UNSUPPORTED: <name>' — including names used as an analogy or with a '-style' suffix. Flag any other invented or unsupported claim the same way. Rephrased or reordered real facts are fine; new facts are not. " +
+            "Then a COMPLETENESS check: if the ORIGINAL CV (or evidence) contains real, relevant experience, tools, projects, achievements, or metrics that are MISSING or under-described in the TAILORED CV, flag each on its own line starting with 'ADD:' naming the real detail to surface (e.g. a real tool to list, a role that needs more bullets, a project to include). A thorough, detailed CV is the goal — flag thinness. Only surface detail that is genuinely in the ORIGINAL CV or evidence; never suggest inventing anything. " +
+            "Bullet points only, no preamble. If it is already excellent, faithful, and thorough, reply with exactly: OK."
         },
-        { role: "user", content: JSON.stringify({ job: jobDescription.slice(0, 3000), originalCv: baseText.slice(0, 6000), tailoredCv: tailoredText.slice(0, 6000) }) }
+        { role: "user", content: JSON.stringify({ job: jobDescription.slice(0, 3000), originalCv: baseText.slice(0, 14000), tailoredCv: tailoredText.slice(0, 8000) }) }
       ]
     });
     return response.trim();
@@ -621,7 +691,7 @@ async function reviewAndRefineText(reviewModel: string, tailorModel: string, bas
       responseFormat: "text",
       maxTokens: 8000,
       messages: [
-        { role: "system", content: "Improve the TAILORED CV using the reviewer's notes. Use ONLY facts present in the ORIGINAL CV — never add employers, titles, dates, degrees, certificates, tools, skills, metrics, or achievements not in it. REMOVE anything the reviewer flagged as UNSUPPORTED, fabricated, or not backed by the ORIGINAL CV. Keep the same language, section order, headings, and overall structure. Return ONLY the improved CV as plain text — no commentary, no markers." },
+        { role: "system", content: "Improve the TAILORED CV using the reviewer's notes. Use ONLY facts present in the ORIGINAL CV or evidence — never add employers, titles, dates, degrees, certificates, tools, skills, metrics, or achievements not in them. REMOVE anything flagged 'UNSUPPORTED'. ADD the real detail flagged with 'ADD:' (it is backed by the ORIGINAL CV) — expand thin roles into fuller bullets, surface missing real tools/projects — making the CV more thorough and detailed. Keep the same language, headings, and professional identity. Return ONLY the improved CV as plain text — no commentary, no markers." },
         { role: "user", content: `JOB: ${job.title} at ${job.company}\n${job.description.slice(0, 3000)}\n\nORIGINAL CV:\n${baseText.slice(0, 6000)}\n\nCURRENT TAILORED CV:\n${tailoredText}\n\nREVIEWER NOTES:\n${critique}` }
       ]
     });
@@ -642,7 +712,7 @@ async function reviewAndRefineStructured(reviewModel: string, tailorModel: strin
       responseFormat: "text",
       maxTokens: 8000,
       messages: [
-        { role: "system", content: "Improve this CV (a JSON object) using the reviewer's notes. Use ONLY facts present in the ORIGINAL CV — never add employers, titles, dates, degrees, certificates, tools, skills, metrics, or achievements not in it. REMOVE anything the reviewer flagged as UNSUPPORTED, fabricated, or not backed by the ORIGINAL CV. Keep the EXACT same JSON shape (same keys and section types). Return ONLY the improved JSON object, nothing else." },
+        { role: "system", content: "Improve this CV (a JSON object) using the reviewer's notes. Use ONLY facts present in the ORIGINAL CV or evidence — never add employers, titles, dates, degrees, certificates, tools, skills, metrics, or achievements not in them. REMOVE anything flagged 'UNSUPPORTED'. ADD the real detail flagged with 'ADD:' (it is backed by the ORIGINAL CV) — expand thin roles into 3-6 fuller bullets, add a tools/tech-stack section and real projects when the content supports them — making the CV more thorough. Keep the EXACT same JSON shape (same keys and section types). Return ONLY the improved JSON object, nothing else." },
         { role: "user", content: `REVIEWER NOTES:\n${critique}\n\nORIGINAL CV:\n${baseText.slice(0, 6000)}\n\nCURRENT CV JSON:\n${JSON.stringify(cv)}` }
       ]
     });
@@ -745,9 +815,10 @@ async function generateDocuments(input: {
           content:
             "You tailor job application materials for one candidate to one job.\n\n" +
             "FAITHFULNESS (most important): Use ONLY facts found in baseCvTemplate and supportingMaterials. Keep the candidate's real professional identity, headline, and career exactly as in baseCvTemplate. Do NOT rebrand them into a different profession or invent a new role title to match the job (for example, never relabel a petroleum / AI-automation engineer as a 'UI/UX Engineer'). NEVER invent or imply employers, job titles, dates, degrees, certificates, tools, skills, metrics, or achievements the candidate does not already have. Rephrasing, reordering, and emphasizing REAL facts is allowed; fabricating is not. If the job needs something the candidate lacks, record it in the checklist with status \"missing\" or \"address\" — never add it to the CV or cover letter.\n\n" +
+            DETAIL_GUIDANCE +
             "Respond with EXACTLY these three sections, each starting with its marker on its own line, in this order, and nothing before, between, or after them except the section content:\n\n" +
             `${CV_MARKER}\n` +
-            "The candidate's CV, keeping the SAME language, section order, headings, tone, wording style, professional identity, and overall layout as baseCvTemplate (if it has rawText, mirror that text's structure). Reorder and rephrase only to emphasize the candidate's REAL, existing achievements most relevant to this job. Make minimal changes; do not introduce a new persona. Output as plain text only.\n\n" +
+            "The candidate's CV, keeping the SAME language, headings style, tone, and professional identity as baseCvTemplate. Surface and elaborate the candidate's REAL, existing achievements most relevant to this job, following the completeness & detail guidance above (detailed experience bullets, a tools/tech section, real projects, links). Do not introduce a new persona or any invented fact. Output as plain text only.\n\n" +
             `${COVER_MARKER}\n` +
             "A concise, specific cover letter for this job, as plain text. Only reference real experience from the materials; do not fabricate roles, projects, or skills.\n\n" +
             `${CHECKLIST_MARKER}\n` +

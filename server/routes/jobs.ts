@@ -122,6 +122,7 @@ router.post("/", asyncRoute(async (req, res) => {
     }
   }
 
+  const hasUrl = /^https?:\/\//i.test(url);
   if (url && !company) company = companyFromHost(url);
   if (!company) company = "Unknown company";
   if (!title) {
@@ -130,10 +131,20 @@ router.post("/", asyncRoute(async (req, res) => {
   }
 
   if (!description || description.length < 20) {
-    throw new Error("Couldn't read that. Paste the job description, or upload a clearer PDF/Word/screenshot.");
+    // Nothing to save when there's no link and no readable text.
+    if (!hasUrl) {
+      throw new Error("Couldn't read that. Paste the job description, or upload a clearer PDF/Word/screenshot.");
+    }
+    // We have a real link but couldn't read the posting (JS-only page, blocked, or
+    // a moved/expired listing). Still save the job so the user sees it in their
+    // list and can open the link, use Re-fetch, or paste the description later —
+    // pasting a link must never silently vanish.
+    description =
+      description ||
+      `Saved from ${url}\n\nWe couldn't read this posting automatically. Open the link, use "Re-fetch", or paste the job description to fill in the details.`;
   }
 
-  const finalUrl = /^https?:\/\//i.test(url) ? url : `manual:${randomUUID()}`;
+  const finalUrl = hasUrl ? url : `manual:${randomUUID()}`;
   const location = parsed.location?.trim() || fetchedLocation || "Not specified";
 
   const ranking = await rankAgainstLatestCv({ title, company, description });
@@ -141,7 +152,7 @@ router.post("/", asyncRoute(async (req, res) => {
   const saved = await prisma.job.upsert({
     where: { url: finalUrl },
     update: { source: "manual", company, title, location, descr: description, fitScore: ranking.score, fitReasons: toJsonString(ranking.reasons), expired: false, checkedAt: new Date() },
-    create: { source: "manual", url: finalUrl, company, title, location, descr: description, fitScore: ranking.score, fitReasons: toJsonString(ranking.reasons), checkedAt: new Date() }
+    create: { source: "manual", url: finalUrl, company, title, location, descr: description, fitScore: ranking.score, fitReasons: toJsonString(ranking.reasons), expired: false, checkedAt: new Date() }
   });
 
   await audit("jobs.added.manual", `Added job: ${title} at ${company}`, {

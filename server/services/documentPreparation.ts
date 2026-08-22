@@ -12,6 +12,7 @@ import { renderHtmlToPdf } from "./htmlRender.js";
 import { runLlm } from "./llm.js";
 import { makeSquareJpeg } from "./photo.js";
 import { readSettings } from "./settings.js";
+import { detectTrack, evaluateCv, guidanceFor } from "./cvGuide.js";
 import { docxTemplatePath, getTemplate } from "./templates.js";
 import { buildDocxFromStructuredCv, buildDocxFromText } from "./wordExport.js";
 import { fromJsonString, toJsonString } from "../utils/json.js";
@@ -116,72 +117,153 @@ export async function prepareDocumentsForJob(jobId: string, instructions?: strin
     && existsSync(templateCv.assetPath as string);
   const gallery = templateId ? getTemplate(templateId) : undefined;
 
-  let tailoredCvJson: Record<string, unknown>;
-  let coverLetter: string;
-  let checklist: ChecklistItem[];
-  let tailoredDocx: Buffer | null = null;
-  let templateHtml: string | null = null;
-  let structuredCv: StructuredCv | null = null;
-  let formatMode: string;
   const usedTemplateId = gallery?.id ?? null;
 
-  if (gallery?.kind === "html") {
-    const result = await generateTemplateCv({ model, reviewModel, baseCv, supportingMaterials: supporting, job: jobContext, instructions });
-    templateHtml = gallery.render(result.cv);
-    structuredCv = result.cv;
-    tailoredCvJson = { ...(result.cv as unknown as Record<string, unknown>), rawText: flattenStructuredCv(result.cv) };
-    coverLetter = result.coverLetter;
-    checklist = result.checklist;
-    formatMode = "template";
-  } else if (gallery?.kind === "docx") {
-    const fill = await fillTemplateDocx({
-      model,
-      reviewModel,
-      templateDocx: await readFile(docxTemplatePath(gallery.file)),
-      baseCv,
-      supportingMaterials: supporting,
-      job: jobContext,
-      instructions
-    });
-    let buffer = fill.docxBuffer;
-    if (gallery.photo) {
-      const image = await makeSquareJpeg(gallery.photo.size);
-      if (image) buffer = swapDocxImages(buffer, gallery.photo.parts, image);
+  // Track-aware pipeline: classify the vacancy (engineer / diplomat / general),
+  // inject that track's design rules into generation, then evaluate the result
+  // against the quality guide and run one corrective round on the weaknesses.
+  const track = detectTrack(job.title, job.descr);
+  const trackGuidance = guidanceFor(track);
+
+  type Produced = {
+    tailoredCvJson: Record<string, unknown>;
+    coverLetter: string;
+    checklist: ChecklistItem[];
+    tailoredDocx: Buffer | null;
+    templateHtml: string | null;
+    structuredCv: StructuredCv | null;
+    formatMode: string;
+  };
+
+  const produce = async (activeInstructions: string | undefined): Promise<Produced> => {
+    if (gallery?.kind === "html") {
+      const result = await generateTemplateCv({ model, reviewModel, baseCv, supportingMaterials: supporting, job: jobContext, instructions: activeInstructions });
+      return {
+        templateHtml: gallery.render(result.cv),
+        structuredCv: result.cv,
+        tailoredCvJson: { ...(result.cv as unknown as Record<string, unknown>), rawText: flattenStructuredCv(result.cv) },
+        coverLetter: result.coverLetter,
+        checklist: result.checklist,
+        tailoredDocx: null,
+        formatMode: "template"
+      };
     }
-    tailoredDocx = buffer;
-    tailoredCvJson = { ...baseCv, rawText: fill.cvText };
-    coverLetter = fill.coverLetter;
-    checklist = fill.checklist;
-    formatMode = "template";
-  } else if (canUseDocx && (templateId === "word" || !templateId)) {
-    const docx = await generateTailoredDocx({
-      model,
-      reviewModel,
-      originalDocx: await readFile(templateCv.assetPath as string),
-      supportingMaterials: supporting,
-      job: jobContext,
-      instructions
-    });
-    tailoredDocx = docx.docxBuffer;
-    tailoredCvJson = { ...baseCv, rawText: docx.cvText };
-    coverLetter = docx.coverLetter;
-    checklist = docx.checklist;
-    formatMode = "docx";
-  } else {
-    const generated = await generateDocuments({ model, reviewModel, baseCv, supportingMaterials: supporting, job: jobContext, instructions });
-    tailoredCvJson = (generated.tailoredCv as Record<string, unknown>) ?? baseCv;
-    coverLetter = generated.coverLetter || "";
-    checklist = Array.isArray(generated.checklist) ? generated.checklist : [];
-    formatMode = "text";
+    if (gallery?.kind === "docx") {
+      const fill = await fillTemplateDocx({
+        model,
+        reviewModel,
+        templateDocx: await readFile(docxTemplatePath(gallery.file)),
+        baseCv,
+        supportingMaterials: supporting,
+        job: jobContext,
+        instructions: activeInstructions
+      });
+      let buffer = fill.docxBuffer;
+      if (gallery.photo) {
+        const image = await makeSquareJpeg(gallery.photo.size);
+        if (image) buffer = swapDocxImages(buffer, gallery.photo.parts, image);
+      }
+      return {
+        tailoredDocx: buffer,
+        tailoredCvJson: { ...baseCv, rawText: fill.cvText },
+        coverLetter: fill.coverLetter,
+        checklist: fill.checklist,
+        templateHtml: null,
+        structuredCv: null,
+        formatMode: "template"
+      };
+    }
+    if (canUseDocx && (templateId === "word" || !templateId)) {
+      const docx = await generateTailoredDocx({
+        model,
+        reviewModel,
+        originalDocx: await readFile(templateCv.assetPath as string),
+        supportingMaterials: supporting,
+        job: jobContext,
+        instructions: activeInstructions
+      });
+      return {
+        tailoredDocx: docx.docxBuffer,
+        tailoredCvJson: { ...baseCv, rawText: docx.cvText },
+        coverLetter: docx.coverLetter,
+        checklist: docx.checklist,
+        templateHtml: null,
+        structuredCv: null,
+        formatMode: "docx"
+      };
+    }
+    const generated = await generateDocuments({ model, reviewModel, baseCv, supportingMaterials: supporting, job: jobContext, instructions: activeInstructions });
+    const produced: Produced = {
+      tailoredCvJson: (generated.tailoredCv as Record<string, unknown>) ?? baseCv,
+      coverLetter: generated.coverLetter || "",
+      checklist: Array.isArray(generated.checklist) ? generated.checklist : [],
+      tailoredDocx: null,
+      templateHtml: null,
+      structuredCv: null,
+      formatMode: "text"
+    };
     // Plain-text mode still gets an editable Word file built from the tailored text.
-    const cvText = typeof tailoredCvJson.rawText === "string" ? tailoredCvJson.rawText : "";
+    const cvText = typeof produced.tailoredCvJson.rawText === "string" ? produced.tailoredCvJson.rawText : "";
     if (cvText.trim()) {
       try {
-        tailoredDocx = await buildDocxFromText(cvText);
+        produced.tailoredDocx = await buildDocxFromText(cvText);
       } catch {
-        tailoredDocx = null; // Never fail the whole preparation over the Word export.
+        produced.tailoredDocx = null; // Never fail the whole preparation over the Word export.
       }
     }
+    return produced;
+  };
+
+  const guidedInstructions = [instructions?.trim(), trackGuidance].filter(Boolean).join("\n\n");
+  const evalModel = reviewModel && reviewModel !== model ? reviewModel : model;
+  const textOf = (produced: Produced) => String(produced.tailoredCvJson.rawText ?? "");
+
+  let output = await produce(guidedInstructions || undefined);
+  let evaluation = await evaluateCv(evalModel, track, textOf(output), { title: job.title, company: job.company, description: job.descr });
+  if (evaluation && !evaluation.pass && evaluation.issues.length) {
+    // One corrective round: regenerate with the evaluator's concrete weaknesses.
+    const corrected = await produce(
+      `${guidedInstructions}\n\nQUALITY EVALUATION FIXES — a professional CV evaluator scored the previous draft ${evaluation.score}/10 and found these weaknesses. Fix EVERY one using only real facts from the materials. WARNING: the notes may name tools or qualifications from the job ad — NEVER add a tool, skill, language level, or claim that is not literally in the candidate's materials; where a note asks for something the candidate lacks, strengthen the closest REAL experience instead and leave the gap to the checklist:\n- ${evaluation.issues.join("\n- ")}`
+    );
+    const correctedEvaluation = await evaluateCv(evalModel, track, textOf(corrected), { title: job.title, company: job.company, description: job.descr });
+    if (correctedEvaluation && (!evaluation || correctedEvaluation.score >= evaluation.score)) {
+      output = corrected;
+      evaluation = correctedEvaluation;
+    }
+  }
+
+  const { tailoredCvJson, coverLetter, tailoredDocx, templateHtml, structuredCv, formatMode } = output;
+  const checklist = output.checklist;
+  if (evaluation) {
+    checklist.push({
+      requirement: `CV quality evaluation (${track} track)`,
+      status: evaluation.pass ? "met" : "address",
+      evidence: `Score ${evaluation.score}/10.${evaluation.issues.length ? ` Remaining: ${evaluation.issues.join(" · ")}` : " All rubric points satisfied."}`,
+      plan: evaluation.pass ? "Ready to send." : "Regenerate once more or fix the listed points in the Word file."
+    });
+  }
+
+  // FINAL QUALITY GATE — deterministic, runs on the finished CV text no matter
+  // which format produced it. Anything still wrong is surfaced as a visible
+  // checklist item so the user is never handed a silently defective CV.
+  const finalCvText = String((tailoredCvJson as { rawText?: unknown }).rawText ?? "");
+  const baseTextForGate = typeof (baseCv as { rawText?: unknown })?.rawText === "string"
+    ? (baseCv as { rawText: string }).rawText
+    : JSON.stringify(baseCv);
+  const gateSource = `${baseTextForGate}\n${JSON.stringify(supporting)}`;
+  const finalIssues = [
+    ...proofArtifacts(finalCvText),
+    ...impossibleDateRanges(finalCvText).map((range) => `Impossible date range "${range}"`),
+    ...unsupportedNativeClaims(gateSource, finalCvText).map((lang) => `Unsupported native-level language claim ("${lang}")`),
+    ...leakedJobTerms(job.descr, gateSource, finalCvText).map((term) => `"${term}" appears in the CV but only exists in the job ad, not your materials`)
+  ];
+  if (finalIssues.length) {
+    checklist.push({
+      requirement: "Automatic quality check found issues in this draft",
+      status: "address",
+      evidence: finalIssues.join(" · "),
+      plan: "Regenerate the materials (usually fixes it) or correct the Word file by hand before sending."
+    });
   }
 
   const nextVersion = await nextCvVersion(`job:${job.id}`);
@@ -365,7 +447,7 @@ async function generateTailoredDocx(input: {
   for (let attempt = 0; attempt < 2; attempt++) {
     const critique = await unsupportedCritique(input.reviewModel || "", input.model, sourceForReview, input.job, cvTextOf(parsed));
     if (!critique) break;
-    parsed = await runTailor(`\n\nCRITICAL FAITHFULNESS FIX — the following were flagged as unsupported/invented. Do NOT include them or anything like them; use ONLY facts present in the candidate's real materials:\n${critique}`);
+    parsed = await runTailor(`\n\nCRITICAL FIXES — lines flagged UNSUPPORTED are invented/unbacked content: do NOT include them or anything like them (use ONLY facts from the candidate's real materials). Lines flagged PROOF are proofreading defects (spelling, grammar, cut-off text, artifacts, inconsistent figures): fix each exactly as stated:\n${critique}`);
   }
 
   const replacements = parsed.replacements;
@@ -449,10 +531,18 @@ function impossibleDateRanges(cvText: string): string[] {
 function unsupportedNativeClaims(sourceMaterials: string, cvText: string): string[] {
   const languages = ["german", "deutsch", "english", "englisch", "french", "französisch", "spanish", "italian"];
   const nativeWords = "(?:native|bilingual|muttersprache|mother\\s*tongue|c2)";
+  // Sources often arrive JSON-stringified: "\n" is then two literal characters
+  // and a "same line" proximity check silently spans what were separate lines
+  // (an old columnar CV export made "…Native … <newline> German…" look like a
+  // supported native-German claim). Restore real newlines before matching.
+  const normalizedSource = sourceMaterials.replace(/\\r/g, "").replace(/\\n/g, "\n");
   const flagged: string[] = [];
   for (const lang of languages) {
-    const claim = new RegExp(`\\b${nativeWords}\\b[^.\\n]{0,60}\\b${lang}\\b|\\b${lang}\\b[^.\\n]{0,60}\\b${nativeWords}\\b`, "i");
-    if (claim.test(cvText) && !claim.test(sourceMaterials)) flagged.push(lang);
+    // The gap must not cross list separators (· , ; |) — otherwise adjacent
+    // items like "English — Not specified · Persian — Native" pair the wrong
+    // language with "Native".
+    const claim = new RegExp(`\\b${nativeWords}\\b[^.\\n·,;|]{0,60}\\b${lang}\\b|\\b${lang}\\b[^.\\n·,;|]{0,60}\\b${nativeWords}\\b`, "i");
+    if (claim.test(cvText) && !claim.test(normalizedSource)) flagged.push(lang);
   }
   return flagged;
 }
@@ -460,6 +550,16 @@ function unsupportedNativeClaims(sourceMaterials: string, cvText: string): strin
 // Ask the cheap reviewer whether the produced CV text contains anything not
 // backed by the candidate's real materials, and merge in the deterministic
 // job-term leak check. Returns UNSUPPORTED lines (empty string when clean).
+// Deterministic proof checks that need no model: leftover pipeline artifacts
+// that must never reach a delivered CV.
+function proofArtifacts(cvText: string): string[] {
+  const issues: string[] = [];
+  if (/<<<|>>>/.test(cvText)) issues.push("PROOF: leftover '<<<' / '>>>' marker fragments — remove them.");
+  if (/@@\d+@@/.test(cvText)) issues.push("PROOF: leftover '@@n@@' slot markers — remove them.");
+  if (/\b(lorem|ipsum|TODO|PLACEHOLDER|xxx)\b/i.test(cvText)) issues.push("PROOF: placeholder text (lorem/TODO/xxx) — replace with real content.");
+  return issues;
+}
+
 async function unsupportedCritique(reviewModel: string, model: string, baseText: string, job: JobContext, cvText: string): Promise<string> {
   if (cvText.trim().length < 40) return "";
   const lines: string[] = [];
@@ -472,9 +572,10 @@ async function unsupportedCritique(reviewModel: string, model: string, baseText:
   for (const range of impossibleDateRanges(cvText)) {
     lines.push(`UNSUPPORTED: the date range "${range}" ends before it starts — replace it with the exact real dates from the candidate's materials.`);
   }
+  lines.push(...proofArtifacts(cvText));
   if (reviewModel && reviewModel !== model) {
     const critique = await reviewCvDraft(reviewModel, baseText, job.description, cvText);
-    lines.push(...critique.split("\n").filter((line) => /^\s*UNSUPPORTED:/i.test(line)));
+    lines.push(...critique.split("\n").filter((line) => /^\s*(UNSUPPORTED|PROOF):/i.test(line)));
   }
   return lines.join("\n").trim();
 }
@@ -571,7 +672,7 @@ async function fillTemplateDocx(input: {
     const over = overLengthSlots(parsed);
     if (!critique && !missing.length && !over.length) break;
     const fixes: string[] = [];
-    if (critique) fixes.push(`CRITICAL FAITHFULNESS FIX — the following were flagged as unsupported/invented. Do NOT include them or anything like them; use ONLY facts present in the candidate's real materials:\n${critique}`);
+    if (critique) fixes.push(`CRITICAL FIXES — lines flagged UNSUPPORTED are invented/unbacked content: do NOT include them or anything like them (use ONLY facts from the candidate's real materials). Lines flagged PROOF are proofreading defects (spelling, grammar, cut-off text, artifacts, inconsistent figures): fix each exactly as stated:\n${critique}`);
     if (missing.length) fixes.push(`COMPLETENESS FIX — these slots still contain the template's sample text: ${missing.map((index) => `@@${index}@@`).join(", ")}. Fill EVERY one of them with the candidate's real content (condense or reuse real facts where needed — the sample person's text must never remain in the final CV).`);
     if (over.length) fixes.push(`LAYOUT FIX — these slots are LONGER than the fixed design allows and their text will collide with the template's graphics. Shorten each to AT MOST the given character count (keep the most job-relevant words): ${over.map((o) => `@@${o.index}@@ ≤ ${o.budget} chars (currently ${o.actual})`).join("; ")}.`);
     parsed = await runFill(`\n\n${fixes.join("\n\n")}`);
@@ -795,7 +896,7 @@ async function generateTemplateCv(input: {
     if (guideGaps(retry.cv, sourceForGaps).length < gaps.length) parsed = retry;
   }
 
-  const cv = await reviewAndRefineStructured(input.reviewModel || "", input.model, baseText, input.supportingMaterials, input.job, parsed.cv);
+  let cv = await reviewAndRefineStructured(input.reviewModel || "", input.model, baseText, input.supportingMaterials, input.job, parsed.cv);
   // Refine may improve sections but must never DROP one (e.g. Languages).
   // Restore any pre-refine section that vanished — deterministically.
   const norm = (heading: string) => heading.toLowerCase().replace(/[^a-z]/g, "");
@@ -805,6 +906,39 @@ async function generateTemplateCv(input: {
     const headingSurvives = cv.sections.some((existing) => norm(existing.heading) === norm(section.heading));
     if ((uniqueTypes.includes(section.type) && !sameTypeSurvives) || (!uniqueTypes.includes(section.type) && !headingSurvives)) {
       cv.sections.push(section);
+    }
+  }
+
+  // Deterministic enforcement (this path must never rely on the LLM reviewer
+  // alone): leaked job-ad terms, upgraded language levels, impossible dates,
+  // and artifacts each force a structured correction until clean (max 2).
+  const detIssuesOf = (candidate: StructuredCv): string[] => {
+    const flat = flattenStructuredCv(candidate);
+    return [
+      ...leakedJobTerms(input.job.description, sourceForGaps, flat).map((term) => `UNSUPPORTED: "${term}" — job-ad term not present in the candidate's materials; remove it everywhere.`),
+      ...unsupportedNativeClaims(sourceForGaps, flat).map((lang) => `UNSUPPORTED: native/bilingual-level claim for "${lang}" — use the candidate's real level verbatim from the materials.`),
+      ...impossibleDateRanges(flat).map((range) => `UNSUPPORTED: the date range "${range}" ends before it starts — use the real dates from the materials.`),
+      ...proofArtifacts(flat)
+    ];
+  };
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const detIssues = detIssuesOf(cv);
+    if (!detIssues.length) break;
+    try {
+      const response = await runLlmGuarded({
+        model: input.model,
+        responseFormat: "text",
+        maxTokens: 8000,
+        messages: [
+          { role: "system", content: "Fix this CV (a JSON object) according to the violation notes. Use ONLY facts present in the ORIGINAL CV + EVIDENCE. Keep the EXACT same JSON shape, section types, and content except for the listed fixes. Return ONLY the corrected JSON object." },
+          { role: "user", content: `VIOLATIONS TO FIX:\n${detIssues.join("\n")}\n\nORIGINAL CV + EVIDENCE:\n${sourceForGaps.slice(0, 14000)}\n\nCURRENT CV JSON:\n${JSON.stringify(cv)}` }
+        ]
+      });
+      const fixed = extractLooseJson<StructuredCv>(response);
+      if (isStructuredCv(fixed)) cv = normalizeStructuredCv(fixed);
+      else break;
+    } catch {
+      break;
     }
   }
   return { ...parsed, cv };
@@ -850,7 +984,7 @@ async function reviewCvDraft(reviewModel: string, baseText: string, jobDescripti
           content:
             "You are a sharp CV reviewer. Compare the candidate's ORIGINAL CV and the TAILORED CV against the JOB. " +
             "Give concrete improvement notes: stronger wording, better ordering, conciseness, and keywords from the job description. " +
-            "CRUCIAL — truthfulness check first: verify every employer, job title, date, degree, certificate, tool, skill, metric, and achievement in the TAILORED CV against the ORIGINAL CV. In particular: (a) list every specific product / tool / technology / framework / brand name that appears in the TAILORED CV (e.g. n8n, Zapier, Docker, AWS) and, for each one NOT written verbatim in the ORIGINAL CV, output a line 'UNSUPPORTED: <name>' — including names used as an analogy or with a '-style' suffix; (b) check every LANGUAGE PROFICIENCY claim (native / bilingual / fluent / C1 / Muttersprache …) — if the TAILORED CV states a higher level than the ORIGINAL CV literally does (e.g. 'native German' when the original says 'German — professional proficiency'), flag it 'UNSUPPORTED:' with the correct real level; (c) check every DATE RANGE — start and end months/years must match the materials exactly; flag altered, swapped, or impossible dates 'UNSUPPORTED:' with the correct real dates. Flag any other invented or unsupported claim the same way. Rephrased or reordered real facts are fine; new facts are not. " +
+            "CRUCIAL — truthfulness check first: verify every employer, job title, date, degree, certificate, tool, skill, metric, and achievement in the TAILORED CV against the ORIGINAL CV. In particular: (a) list every specific product / tool / technology / framework / brand name that appears in the TAILORED CV (e.g. n8n, Zapier, Docker, AWS) and, for each one NOT written verbatim in the ORIGINAL CV, output a line 'UNSUPPORTED: <name>' — including names used as an analogy or with a '-style' suffix; (b) check every LANGUAGE PROFICIENCY claim (native / bilingual / fluent / C1 / Muttersprache …) — if the TAILORED CV states a higher level than the ORIGINAL CV literally does (e.g. 'native German' when the original says 'German — professional proficiency'), flag it 'UNSUPPORTED:' with the correct real level; (c) check every DATE RANGE — start and end months/years must match the materials exactly; flag altered, swapped, or impossible dates 'UNSUPPORTED:' with the correct real dates; (d) PROOFREAD the entire TAILORED CV like a professional editor — flag every spelling or grammar error, truncated or cut-off word or sentence, stray symbol or formatting artifact, doubled word, and internally inconsistent figure (e.g. two different totals for years of experience) on its own line starting with 'PROOF:' and state the exact fix. Flag any other invented or unsupported claim the same way. Rephrased or reordered real facts are fine; new facts are not. " +
             "Then a COMPLETENESS check: if the ORIGINAL CV (or evidence) contains real, relevant experience, tools, projects, achievements, or metrics that are MISSING or under-described in the TAILORED CV, flag each on its own line starting with 'ADD:' naming the real detail to surface (e.g. a real tool to list, a role that needs more bullets, a project to include). A thorough, detailed CV is the goal — flag thinness. Only surface detail that is genuinely in the ORIGINAL CV or evidence; never suggest inventing anything. " +
             "Bullet points only, no preamble. If it is already excellent, faithful, and thorough, reply with exactly: OK."
         },
@@ -882,7 +1016,7 @@ async function reviewAndRefineText(reviewModel: string, tailorModel: string, bas
       responseFormat: "text",
       maxTokens: 8000,
       messages: [
-        { role: "system", content: "Improve the TAILORED CV using the reviewer's notes. Use ONLY facts present in the ORIGINAL CV + EVIDENCE — never add employers, titles, dates, degrees, certificates, tools, skills, metrics, or achievements not in them (facts appearing only in the evidence are REAL and allowed). REMOVE anything flagged 'UNSUPPORTED'. ADD the real detail flagged with 'ADD:' — expand thin roles into fuller bullets, surface missing real tools/projects — making the CV more thorough and detailed. Keep the same language, headings, and professional identity. Return ONLY the improved CV as plain text — no commentary, no markers." },
+        { role: "system", content: "Improve the TAILORED CV using the reviewer's notes. Use ONLY facts present in the ORIGINAL CV + EVIDENCE — never add employers, titles, dates, degrees, certificates, tools, skills, metrics, or achievements not in them (facts appearing only in the evidence are REAL and allowed). REMOVE anything flagged 'UNSUPPORTED'. FIX everything flagged 'PROOF:' (spelling, grammar, cut-off words, artifacts, inconsistent figures) exactly as the note says. ADD the real detail flagged with 'ADD:' — expand thin roles into fuller bullets, surface missing real tools/projects — making the CV more thorough and detailed. Keep the same language, headings, and professional identity. Return ONLY the improved CV as plain text — no commentary, no markers." },
         { role: "user", content: `JOB: ${job.title} at ${job.company}\n${job.description.slice(0, 3000)}\n\nORIGINAL CV + EVIDENCE:\n${source.slice(0, 16000)}\n\nCURRENT TAILORED CV:\n${tailoredText}\n\nREVIEWER NOTES:\n${critique}` }
       ]
     });
@@ -904,7 +1038,7 @@ async function reviewAndRefineStructured(reviewModel: string, tailorModel: strin
       responseFormat: "text",
       maxTokens: 8000,
       messages: [
-        { role: "system", content: "Improve this CV (a JSON object) using the reviewer's notes. Use ONLY facts present in the ORIGINAL CV + EVIDENCE — never add employers, titles, dates, degrees, certificates, tools, skills, metrics, or achievements not in them (facts appearing only in the evidence are REAL and allowed). REMOVE anything flagged 'UNSUPPORTED'. ADD the real detail flagged with 'ADD:' — expand thin roles into 3-6 fuller bullets, add a tools/tech-stack section and real projects when the content supports them — making the CV more thorough. Keep the EXACT same JSON shape (same keys and section types). Return ONLY the improved JSON object, nothing else." },
+        { role: "system", content: "Improve this CV (a JSON object) using the reviewer's notes. Use ONLY facts present in the ORIGINAL CV + EVIDENCE — never add employers, titles, dates, degrees, certificates, tools, skills, metrics, or achievements not in them (facts appearing only in the evidence are REAL and allowed). REMOVE anything flagged 'UNSUPPORTED'. FIX everything flagged 'PROOF:' (spelling, grammar, cut-off words, artifacts, inconsistent figures) exactly as the note says. ADD the real detail flagged with 'ADD:' — expand thin roles into 3-6 fuller bullets, add a tools/tech-stack section and real projects when the content supports them — making the CV more thorough. Keep the EXACT same JSON shape (same keys and section types). Return ONLY the improved JSON object, nothing else." },
         { role: "user", content: `REVIEWER NOTES:\n${critique}\n\nORIGINAL CV + EVIDENCE:\n${source.slice(0, 16000)}\n\nCURRENT CV JSON:\n${JSON.stringify(cv)}` }
       ]
     });

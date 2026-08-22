@@ -12,6 +12,7 @@ import { renderHtmlToPdf } from "./htmlRender.js";
 import { runLlm } from "./llm.js";
 import { makeSquareJpeg } from "./photo.js";
 import { readSettings } from "./settings.js";
+import { detectTrack, evaluateCv, guidanceFor } from "./cvGuide.js";
 import { docxTemplatePath, getTemplate } from "./templates.js";
 import { buildDocxFromStructuredCv, buildDocxFromText } from "./wordExport.js";
 import { fromJsonString, toJsonString } from "../utils/json.js";
@@ -22,6 +23,25 @@ const COVER_MARKER = "<<<COVER_LETTER>>>";
 const CHECKLIST_MARKER = "<<<CHECKLIST_JSON>>>";
 const SEGMENTS_MARKER = "<<<CV_SEGMENTS>>>";
 const CV_JSON_MARKER = "<<<CV_JSON>>>";
+
+// Guidance that makes the tailored CV thorough and recruiter-ready (tech-resume
+// best practice) WITHOUT ever loosening the faithfulness rules above it — detail
+// must always trace back to the candidate's real materials, never be invented.
+const DETAIL_GUIDANCE =
+  "COMPLETENESS & DETAIL (tech-resume best practice — write a strong, thorough CV, never a sparse one): Draw out ALL of the candidate's real, relevant experience from the CV and supporting materials. A single page is fine only when that is genuinely all the real content supports; otherwise use up to TWO full pages rather than dropping real, relevant detail.\n" +
+  "MANDATORY SECTION CHECKLIST — include every one of these the candidate's REAL materials support (a professional tech resume is incomplete without them):\n" +
+  "  1. Name + contact including LOCATION (city, country), phone, email.\n" +
+  "  2. Professional summary: 1-3 sentences — title, sector, key skills/credentials, experience overview.\n" +
+  "  3. Relevant LINKS: LinkedIn / GitHub / portfolio, whenever they appear in the materials.\n" +
+  "  4. TOOLS / TECH STACK: a dedicated section listing the candidate's real languages, frameworks, tools and platforms grouped by category — separate from soft skills.\n" +
+  "  5. SKILLS: focused, quality over quantity; avoid generic 'experience with' phrasing.\n" +
+  "  6. WORK EXPERIENCE: for EACH real role 3-6 specific bullets, each starting with a strong action verb (Built, Automated, Led, Reduced, Designed, Delivered…) and carrying the real metric or outcome whenever the materials provide one (numbers, %, time saved, scale, users). Never compress a rich role into one or two vague lines.\n" +
+  "  7. PROJECTS / selected work: real projects with impact and technologies.\n" +
+  "  8. EDUCATION: relevant degrees with institution and year.\n" +
+  "  9. CERTIFICATIONS and 10. LANGUAGES (with the candidate's real proficiency levels, verbatim).\n" +
+  "KEYWORDS: mirror the exact terminology of the job description wherever the candidate genuinely has that skill (recruiters and ATS scanners match those words). Prefer specific and concrete over generic; every detail must trace back to the materials — more detail must never mean invented detail.\n" +
+  "CONFLICTS: when materials disagree on a fact (e.g. one says '5 years' and a newer one says '7+ years'), use the figure from the NEWEST material — the latest profile is the current truth.\n" +
+  "TAILORING = EMPHASIS, NEVER DELETION: include EVERY real position from the candidate's history — deleting a role creates a visible employment gap, which is worse than an unrelated role. Give job-relevant roles more and fuller bullets and bold lead-ins; condense less relevant roles to their title, employer, dates and 1-2 lines — but they STAY, with their dates.\n\n";
 
 type ChecklistItem = {
   requirement: string;
@@ -98,70 +118,159 @@ export async function prepareDocumentsForJob(jobId: string, instructions?: strin
     && existsSync(templateCv.assetPath as string);
   const gallery = templateId ? getTemplate(templateId) : undefined;
 
-  let tailoredCvJson: Record<string, unknown>;
-  let coverLetter: string;
-  let checklist: ChecklistItem[];
-  let tailoredDocx: Buffer | null = null;
-  let templateHtml: string | null = null;
-  let structuredCv: StructuredCv | null = null;
-  let formatMode: string;
   const usedTemplateId = gallery?.id ?? null;
 
-  if (gallery?.kind === "html") {
-    const result = await generateTemplateCv({ model, reviewModel, baseCv, supportingMaterials: supporting, job: jobContext, instructions });
-    templateHtml = gallery.render(result.cv);
-    structuredCv = result.cv;
-    tailoredCvJson = { ...(result.cv as unknown as Record<string, unknown>), rawText: flattenStructuredCv(result.cv) };
-    coverLetter = result.coverLetter;
-    checklist = result.checklist;
-    formatMode = "template";
-  } else if (gallery?.kind === "docx") {
-    const fill = await fillTemplateDocx({
-      model,
-      templateDocx: await readFile(docxTemplatePath(gallery.file)),
-      baseCv,
-      supportingMaterials: supporting,
-      job: jobContext,
-      instructions
-    });
-    let buffer = fill.docxBuffer;
-    if (gallery.photo) {
-      const image = await makeSquareJpeg(gallery.photo.size);
-      if (image) buffer = swapDocxImages(buffer, gallery.photo.parts, image);
+  // Track-aware pipeline: classify the vacancy (engineer / diplomat / general),
+  // inject that track's design rules into generation, then evaluate the result
+  // against the quality guide and run one corrective round on the weaknesses.
+  const track = detectTrack(job.title, job.descr);
+  const trackGuidance = guidanceFor(track);
+
+  type Produced = {
+    tailoredCvJson: Record<string, unknown>;
+    coverLetter: string;
+    checklist: ChecklistItem[];
+    tailoredDocx: Buffer | null;
+    templateHtml: string | null;
+    structuredCv: StructuredCv | null;
+    formatMode: string;
+  };
+
+  const produce = async (activeInstructions: string | undefined): Promise<Produced> => {
+    if (gallery?.kind === "html") {
+      const result = await generateTemplateCv({ model, reviewModel, baseCv, supportingMaterials: supporting, job: jobContext, instructions: activeInstructions });
+      let photoDataUrl: string | undefined;
+      if (gallery.wantsPhoto) {
+        const jpeg = await makeSquareJpeg(280);
+        if (jpeg) photoDataUrl = `data:image/jpeg;base64,${jpeg.toString("base64")}`;
+      }
+      return {
+        templateHtml: gallery.render(result.cv, photoDataUrl),
+        structuredCv: result.cv,
+        tailoredCvJson: { ...(result.cv as unknown as Record<string, unknown>), rawText: flattenStructuredCv(result.cv) },
+        coverLetter: result.coverLetter,
+        checklist: result.checklist,
+        tailoredDocx: null,
+        formatMode: "template"
+      };
     }
-    tailoredDocx = buffer;
-    tailoredCvJson = { ...baseCv, rawText: fill.cvText };
-    coverLetter = fill.coverLetter;
-    checklist = fill.checklist;
-    formatMode = "template";
-  } else if (canUseDocx && (templateId === "word" || !templateId)) {
-    const docx = await generateTailoredDocx({
-      model,
-      originalDocx: await readFile(templateCv.assetPath as string),
-      supportingMaterials: supporting,
-      job: jobContext,
-      instructions
-    });
-    tailoredDocx = docx.docxBuffer;
-    tailoredCvJson = { ...baseCv, rawText: docx.cvText };
-    coverLetter = docx.coverLetter;
-    checklist = docx.checklist;
-    formatMode = "docx";
-  } else {
-    const generated = await generateDocuments({ model, reviewModel, baseCv, supportingMaterials: supporting, job: jobContext, instructions });
-    tailoredCvJson = (generated.tailoredCv as Record<string, unknown>) ?? baseCv;
-    coverLetter = generated.coverLetter || "";
-    checklist = Array.isArray(generated.checklist) ? generated.checklist : [];
-    formatMode = "text";
+    if (gallery?.kind === "docx") {
+      const fill = await fillTemplateDocx({
+        model,
+        reviewModel,
+        templateDocx: await readFile(docxTemplatePath(gallery.file)),
+        baseCv,
+        supportingMaterials: supporting,
+        job: jobContext,
+        instructions: activeInstructions
+      });
+      let buffer = fill.docxBuffer;
+      if (gallery.photo) {
+        const image = await makeSquareJpeg(gallery.photo.size);
+        if (image) buffer = swapDocxImages(buffer, gallery.photo.parts, image);
+      }
+      return {
+        tailoredDocx: buffer,
+        tailoredCvJson: { ...baseCv, rawText: fill.cvText },
+        coverLetter: fill.coverLetter,
+        checklist: fill.checklist,
+        templateHtml: null,
+        structuredCv: null,
+        formatMode: "template"
+      };
+    }
+    if (canUseDocx && (templateId === "word" || !templateId)) {
+      const docx = await generateTailoredDocx({
+        model,
+        reviewModel,
+        originalDocx: await readFile(templateCv.assetPath as string),
+        supportingMaterials: supporting,
+        job: jobContext,
+        instructions: activeInstructions
+      });
+      return {
+        tailoredDocx: docx.docxBuffer,
+        tailoredCvJson: { ...baseCv, rawText: docx.cvText },
+        coverLetter: docx.coverLetter,
+        checklist: docx.checklist,
+        templateHtml: null,
+        structuredCv: null,
+        formatMode: "docx"
+      };
+    }
+    const generated = await generateDocuments({ model, reviewModel, baseCv, supportingMaterials: supporting, job: jobContext, instructions: activeInstructions });
+    const produced: Produced = {
+      tailoredCvJson: (generated.tailoredCv as Record<string, unknown>) ?? baseCv,
+      coverLetter: generated.coverLetter || "",
+      checklist: Array.isArray(generated.checklist) ? generated.checklist : [],
+      tailoredDocx: null,
+      templateHtml: null,
+      structuredCv: null,
+      formatMode: "text"
+    };
     // Plain-text mode still gets an editable Word file built from the tailored text.
-    const cvText = typeof tailoredCvJson.rawText === "string" ? tailoredCvJson.rawText : "";
+    const cvText = typeof produced.tailoredCvJson.rawText === "string" ? produced.tailoredCvJson.rawText : "";
     if (cvText.trim()) {
       try {
-        tailoredDocx = await buildDocxFromText(cvText);
+        produced.tailoredDocx = await buildDocxFromText(cvText);
       } catch {
-        tailoredDocx = null; // Never fail the whole preparation over the Word export.
+        produced.tailoredDocx = null; // Never fail the whole preparation over the Word export.
       }
     }
+    return produced;
+  };
+
+  const guidedInstructions = [instructions?.trim(), trackGuidance].filter(Boolean).join("\n\n");
+  const evalModel = reviewModel && reviewModel !== model ? reviewModel : model;
+  const textOf = (produced: Produced) => String(produced.tailoredCvJson.rawText ?? "");
+
+  let output = await produce(guidedInstructions || undefined);
+  let evaluation = await evaluateCv(evalModel, track, textOf(output), { title: job.title, company: job.company, description: job.descr });
+  if (evaluation && !evaluation.pass && evaluation.issues.length) {
+    // One corrective round: regenerate with the evaluator's concrete weaknesses.
+    const corrected = await produce(
+      `${guidedInstructions}\n\nQUALITY EVALUATION FIXES — a professional CV evaluator scored the previous draft ${evaluation.score}/10 and found these weaknesses. Fix EVERY one using only real facts from the materials. WARNING: the notes may name tools or qualifications from the job ad — NEVER add a tool, skill, language level, or claim that is not literally in the candidate's materials; where a note asks for something the candidate lacks, strengthen the closest REAL experience instead and leave the gap to the checklist:\n- ${evaluation.issues.join("\n- ")}`
+    );
+    const correctedEvaluation = await evaluateCv(evalModel, track, textOf(corrected), { title: job.title, company: job.company, description: job.descr });
+    if (correctedEvaluation && (!evaluation || correctedEvaluation.score >= evaluation.score)) {
+      output = corrected;
+      evaluation = correctedEvaluation;
+    }
+  }
+
+  const { tailoredCvJson, coverLetter, tailoredDocx, templateHtml, structuredCv, formatMode } = output;
+  const checklist = output.checklist;
+  if (evaluation) {
+    checklist.push({
+      requirement: `CV quality evaluation (${track} track)`,
+      status: evaluation.pass ? "met" : "address",
+      evidence: `Score ${evaluation.score}/10.${evaluation.issues.length ? ` Remaining: ${evaluation.issues.join(" · ")}` : " All rubric points satisfied."}`,
+      plan: evaluation.pass ? "Ready to send." : "Regenerate once more or fix the listed points in the Word file."
+    });
+  }
+
+  // FINAL QUALITY GATE — deterministic, runs on the finished CV text no matter
+  // which format produced it. Anything still wrong is surfaced as a visible
+  // checklist item so the user is never handed a silently defective CV.
+  const finalCvText = String((tailoredCvJson as { rawText?: unknown }).rawText ?? "");
+  const baseTextForGate = typeof (baseCv as { rawText?: unknown })?.rawText === "string"
+    ? (baseCv as { rawText: string }).rawText
+    : JSON.stringify(baseCv);
+  const gateSource = `${baseTextForGate}\n${JSON.stringify(supporting)}`;
+  const finalIssues = [
+    ...proofArtifacts(finalCvText),
+    ...impossibleDateRanges(finalCvText).map((range) => `Impossible date range "${range}"`),
+    ...unsupportedNativeClaims(gateSource, finalCvText).map((lang) => `Unsupported native-level language claim ("${lang}")`),
+    ...leakedJobTerms(job.descr, gateSource, finalCvText).map((term) => `"${term}" appears in the CV but only exists in the job ad, not your materials`),
+    ...missingRangeStarts(baseTextForGate, finalCvText).map((start) => `The position starting ${start} is missing — this leaves a gap in your employment history`)
+  ];
+  if (finalIssues.length) {
+    checklist.push({
+      requirement: "Automatic quality check found issues in this draft",
+      status: "address",
+      evidence: finalIssues.join(" · "),
+      plan: "Regenerate the materials (usually fixes it) or correct the Word file by hand before sending."
+    });
   }
 
   const nextVersion = await nextCvVersion(`job:${job.id}`);
@@ -281,6 +390,7 @@ export function presentDocSet<T extends {
 // no large JSON-embedded blob to mis-escape.
 async function generateTailoredDocx(input: {
   model: string;
+  reviewModel?: string;
   originalDocx: Buffer;
   supportingMaterials: SupportingMaterial[];
   job: JobContext;
@@ -293,60 +403,68 @@ async function generateTailoredDocx(input: {
   }
 
   const numberedSegments = candidates.map((segment) => `@@${segment.index}@@ ${segment.text}`).join("\n");
-  const userPayload = [
-    `JOB TITLE: ${input.job.title}`,
-    `COMPANY: ${input.job.company}`,
-    `LOCATION: ${input.job.location ?? "Not specified"}`,
-    "",
-    "JOB DESCRIPTION:",
-    input.job.description,
-    "",
-    "SUPPORTING MATERIALS (facts about the candidate, use as evidence only):",
-    JSON.stringify(input.supportingMaterials),
-    "",
-    `USER INSTRUCTIONS: ${input.instructions || "(none)"}`,
-    "",
-    "CV SEGMENTS (rewrite the wording of the ones that should better match the job; keep the same numbers):",
-    numberedSegments
-  ].join("\n");
+  const baseText = candidates.map((segment) => segment.text).join("\n");
 
-  const response = await runLlmGuarded({
-    model: input.model,
-    responseFormat: "text",
-    maxTokens: 8000,
-    messages: [
-      {
-        role: "system",
-        content:
-          "You tailor a candidate's existing CV to one job WITHOUT changing its layout.\n\n" +
-          "FAITHFULNESS (most important): Use ONLY facts present in the CV segments and supporting materials. Keep the candidate's real professional identity, headline, and career exactly as written. Do NOT rebrand them into a different profession or invent a new role title to match the job (for example, never relabel a petroleum / AI-automation engineer as a 'UI/UX Engineer'). NEVER invent or imply employers, job titles, dates, degrees, certificates, tools, skills, metrics, or achievements the candidate does not already have in the materials. Rephrasing, reordering, and emphasizing REAL facts is allowed; fabricating is not. If the job requires something the candidate lacks, record it in the checklist as \"missing\" or \"address\" — never add it to the CV or cover letter. Prefer MINIMAL edits: only change wording where it genuinely surfaces existing, relevant strengths for this job. When in doubt, leave the segment unchanged.\n\n" +
-          "The CV is given as numbered text segments (one per paragraph). Rewrite ONLY the wording of segments that should better match the job. Keep each rewritten segment roughly the same length and on a SINGLE line. Do not change the person's name, contact details, dates, or company names. If a segment should stay as-is, leave it out of your output.\n\n" +
-          "Respond with EXACTLY these three sections, each starting with its marker on its own line, and nothing else:\n\n" +
-          `${SEGMENTS_MARKER}\n` +
-          "One line per changed segment, in the form: @@<number>@@ <rewritten text>  (use the numbers shown in the input; output only changed segments).\n\n" +
-          `${COVER_MARKER}\n` +
-          "A concise, specific cover letter for this job, as plain text. Only reference real experience from the materials; do not fabricate roles, projects, or skills.\n\n" +
-          `${CHECKLIST_MARKER}\n` +
-          'A valid JSON array. Each element is an object with keys: "requirement" (string), "status" (one of "met", "missing", "address"), "evidence" (string), "plan" (string).'
-      },
-      { role: "user", content: userPayload }
-    ]
-  });
+  const runTailor = async (extraInstruction: string) => {
+    const userPayload = [
+      `JOB TITLE: ${input.job.title}`,
+      `COMPANY: ${input.job.company}`,
+      `LOCATION: ${input.job.location ?? "Not specified"}`,
+      "",
+      "JOB DESCRIPTION:",
+      input.job.description,
+      "",
+      "SUPPORTING MATERIALS (facts about the candidate, use as evidence only):",
+      JSON.stringify(input.supportingMaterials),
+      "",
+      `USER INSTRUCTIONS: ${input.instructions || "(none)"}${extraInstruction}`,
+      "",
+      "CV SEGMENTS (rewrite the wording of the ones that should better match the job; keep the same numbers):",
+      numberedSegments
+    ].join("\n");
+    const response = await runLlmGuarded({
+      model: input.model,
+      responseFormat: "text",
+      maxTokens: 8000,
+      messages: [
+        {
+          role: "system",
+          content:
+            "You tailor a candidate's existing CV to one job WITHOUT changing its layout.\n\n" +
+            "FAITHFULNESS (most important): Use ONLY facts present in the CV segments and supporting materials. Keep the candidate's real professional identity, headline, and career exactly as written. Do NOT rebrand them into a different profession or invent a new role title to match the job (for example, never relabel a petroleum / AI-automation engineer as a 'UI/UX Engineer'). NEVER invent or imply employers, job titles, dates, degrees, certificates, tools, skills, metrics, or achievements the candidate does not already have in the materials — do not add tool names, product names, or '-style' analogies that are not literally in the materials. Rephrasing, reordering, and emphasizing REAL facts is allowed; fabricating is not. If the job requires something the candidate lacks, record it in the checklist as \"missing\" or \"address\" — never add it to the CV or cover letter.\n\n" +
+            "The CV is given as numbered text segments (one per paragraph). Rewrite the wording of segments to be more detailed, specific, and quantified where the candidate's real materials support it (expand thin bullets into fuller ones using real facts), while keeping the layout, name, contact details, dates, and company names unchanged. Keep each rewritten segment on a SINGLE line. If a segment should stay as-is, leave it out of your output. Do NOT insert any <<<MARKER>>> tokens or new section headers into a segment.\n\n" +
+            "Respond with EXACTLY these three sections, each starting with its marker on its own line, and nothing else:\n\n" +
+            `${SEGMENTS_MARKER}\n` +
+            "One line per changed segment, in the form: @@<number>@@ <rewritten text>  (use the numbers shown in the input; output only changed segments).\n\n" +
+            `${COVER_MARKER}\n` +
+            "A concise, specific cover letter for this job, as plain text. Only reference real experience from the materials; do not fabricate roles, projects, or skills.\n\n" +
+            `${CHECKLIST_MARKER}\n` +
+            'A valid JSON array. Each element is an object with keys: "requirement" (string), "status" (one of "met", "missing", "address"), "evidence" (string), "plan" (string).'
+        },
+        { role: "user", content: userPayload }
+      ]
+    });
+    return parseDocxResponse(response, segments);
+  };
+  const cvTextOf = (parsed: { replacements: Map<number, string> }) =>
+    segments.map((segment) => parsed.replacements.get(segment.index) ?? segment.text).filter((line) => line.trim().length > 0).join("\n");
 
-  const parsed = parseDocxResponse(response, segments);
+  const sourceForReview = `${baseText}\n\nEVIDENCE MATERIALS:\n${JSON.stringify(input.supportingMaterials)}`;
+  let parsed = await runTailor("");
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const critique = await unsupportedCritique(input.reviewModel || "", input.model, sourceForReview, input.job, cvTextOf(parsed));
+    if (!critique) break;
+    parsed = await runTailor(`\n\nCRITICAL FIXES — lines flagged UNSUPPORTED are invented/unbacked content: do NOT include them or anything like them (use ONLY facts from the candidate's real materials). Lines flagged PROOF are proofreading defects (spelling, grammar, cut-off text, artifacts, inconsistent figures): fix each exactly as stated:\n${critique}`);
+  }
+
   const replacements = parsed.replacements;
   const docxBuffer = replacements.size
     ? applyDocxReplacements(input.originalDocx, replacements)
     : input.originalDocx;
 
-  const cvText = segments
-    .map((segment) => replacements.get(segment.index) ?? segment.text)
-    .filter((line) => line.trim().length > 0)
-    .join("\n");
-
   return {
     docxBuffer,
-    cvText,
+    cvText: cvTextOf(parsed),
     coverLetter: parsed.coverLetter,
     checklist: parsed.checklist
   };
@@ -355,7 +473,11 @@ async function generateTailoredDocx(input: {
 const TEMPLATE_FILL_SYSTEM_PROMPT =
   "You fill a CV template with a candidate's real content, tailored to one job.\n\n" +
   "You are given the template as numbered SLOTS, each currently holding SAMPLE text (a fake person's details). For EACH slot, infer its purpose from the sample (name, job title, contact line, section heading, summary, a job entry, a bullet, a skill, education, etc.) and replace it with the CANDIDATE'S real, job-tailored content that fits that slot. Replace ALL sample names, contacts, companies and details with the candidate's real ones. Keep pure section HEADINGS (like 'Experience', 'Education', 'Skills') unchanged. Keep each slot's length similar to its sample so the layout still fits.\n\n" +
-  "FAITHFULNESS (most important): Use ONLY facts from the candidate's real CV and supporting materials. NEVER invent employers, job titles, dates, degrees, certificates, tools, skills, metrics, or achievements. Rephrasing, reordering, and emphasizing REAL facts is allowed; fabricating is not. If the job requires something the candidate lacks, record it in the checklist as \"missing\" or \"address\" — never put it in the CV or cover letter. If the template has more slots than the candidate has real content, reuse or condense the candidate's real content sensibly — never fabricate. If a slot has no matching real content, use the closest real content or leave it unchanged.\n\n" +
+  "FAITHFULNESS (most important): Use ONLY facts from the candidate's real CV and supporting materials. NEVER invent employers, job titles, dates, degrees, certificates, tools, skills, metrics, or achievements. Never write a specific product, tool, brand, or framework name (e.g. n8n, Zapier, Docker, AWS) unless that exact name appears in the candidate's materials — and never use it as a '-style' analogy either. Rephrasing, reordering, and emphasizing REAL facts is allowed; fabricating is not. If the job requires something the candidate lacks, record it in the checklist as \"missing\" or \"address\" — never put it in the CV or cover letter. If the template has more slots than the candidate has real content, reuse or condense the candidate's real content sensibly — never fabricate. If a slot has no matching real content, use the closest real content or leave it unchanged.\n\n" +
+  "DETAIL vs FIT (both matter): Within each slot, use the candidate's strongest, most specific real content — concrete achievements with real metrics and the actual tools/technologies named in their materials, never vague filler. BUT this is a FIXED one-page design: keep EVERY slot AT OR UNDER its sample text's length — if a slot's content would run longer than its sample, trim the least job-relevant detail instead of letting it grow. Overflowing slots push later sections (Education, Certifications) off the page, which is worse than a shorter bullet. LATER SECTIONS ARE MANDATORY: Education, certifications, and languages slots must always keep real content — never sacrifice them for longer bullets. For a longer, more detailed CV the candidate can pick the Navy / Energy template or the Word output.\n\n" +
+  "LANGUAGES: Copy the candidate's real language proficiency levels VERBATIM from their materials (e.g. 'German — Full Professional Proficiency', 'Persian — Native'). NEVER upgrade a level — never call someone a native or fluent speaker of a language their materials don't literally state at that level, no matter what language the job posting is written in.\n" +
+  "CONFLICTS: when materials disagree on a fact (e.g. one says '5 years' and a newer one says '7+ years'), use the figure from the NEWEST material — the latest profile is the current truth.\n" +
+  "TAILORING = EMPHASIS, NEVER DELETION: every real position from the candidate's history must appear — a deleted role creates a visible employment gap. Emphasize job-relevant roles with fuller content; when the template has fewer experience slots than the candidate has roles, MERGE the older roles into the last slot as one compact line (e.g. 'Earlier: Software Developer in Test, BVAEB (02/2019 - 09/2021); Researcher, University of Leoben (08/2015 - 12/2018)') so the timeline stays complete.\n\n" +
   "Respond with EXACTLY these three sections, each starting with its marker on its own line:\n\n" +
   SEGMENTS_MARKER + "\n" +
   "One line per slot you fill, in the form: @@<number>@@ <new text>  (use the numbers shown; output a line for every slot that should change).\n\n" +
@@ -366,8 +488,145 @@ const TEMPLATE_FILL_SYSTEM_PROMPT =
 
 // Pour the candidate's tailored content into a designed .docx template (whose
 // slots currently hold sample text), keeping the template's exact layout.
+// Deterministic guard: brand/tool-looking tokens (contain a digit or inner
+// capitals, e.g. n8n, HubSpot, GPT-4) that the JOB description mentions and the
+// tailored CV adopted, but that appear NOWHERE in the candidate's materials.
+// This is the classic fabrication pattern — the model mirrors a required tool
+// from the job ad the candidate doesn't have.
+function leakedJobTerms(jobDescription: string, sourceMaterials: string, cvText: string): string[] {
+  const tokens = new Set(
+    (jobDescription.match(/\b[A-Za-z][A-Za-z0-9.+#-]{2,}\b/g) || []).filter(
+      (token) => /\d/.test(token) || /^[a-z]+[A-Z]/.test(token) || /^[A-Z][a-z]+[A-Z]/.test(token)
+    )
+  );
+  const source = sourceMaterials.toLowerCase();
+  const tailored = cvText.toLowerCase();
+  return [...tokens].filter((token) => {
+    const needle = token.toLowerCase();
+    return tailored.includes(needle) && !source.includes(needle);
+  });
+}
+
+// Deterministic guard: dropped work experience. Tailoring must EMPHASIZE, never
+// delete — a missing role leaves a visible gap in the career timeline. Every
+// date-range START in the base CV must appear (in some format) in the tailored
+// CV; a role can be condensed to one line, but its dates must survive.
+const MONTH_NAMES = ["january", "february", "march", "april", "may", "june", "july", "august", "september", "october", "november", "december"];
+function missingRangeStarts(baseText: string, cvText: string): string[] {
+  const source = baseText.replace(/\\r/g, "").replace(/\\n/g, "\n");
+  const rangeStart = /(\b(?:0?[1-9]|1[0-2])\/20[0-3]\d|\b[A-Za-z]{3,9}\.?\s+20[0-3]\d)\s*(?:to|bis|[–—-])\s*(?:0?\d?\d?\/?20[0-3]\d|[A-Za-z]{3,9}\.?\s+20[0-3]\d|Present|Current|heute)/gi;
+  const missing: string[] = [];
+  for (const match of source.matchAll(rangeStart)) {
+    // Education entries may legitimately be condensed to a single year
+    // ("M.Sc. — 2014"), so only EMPLOYMENT ranges are mandatory.
+    const context = source.slice(Math.max(0, (match.index ?? 0) - 100), (match.index ?? 0) + match[0].length + 40);
+    if (/master|bachelor|b\.?\s?sc|m\.?\s?sc|diploma|thesis|school|studium/i.test(context)) continue;
+    const token = match[1].trim();
+    let month = 0;
+    let year = 0;
+    const numeric = token.match(/^(\d{1,2})\/(20[0-3]\d)$/);
+    if (numeric) {
+      month = Number(numeric[1]);
+      year = Number(numeric[2]);
+    } else {
+      const named = token.match(/^([A-Za-z]{3,9})\.?\s+(20[0-3]\d)$/);
+      if (!named) continue;
+      month = MONTH_NAMES.findIndex((name) => name.startsWith(named[1].toLowerCase().slice(0, 3))) + 1;
+      year = Number(named[2]);
+    }
+    if (!month || !year) continue;
+    const monthName = MONTH_NAMES[month - 1];
+    const inCv = new RegExp(`\\b0?${month}\\/${year}\\b|\\b${monthName.slice(0, 3)}[a-z]*\\.?\\s+${year}\\b`, "i");
+    const key = `${month}/${year}`;
+    if (!inCv.test(cvText) && !missing.includes(key)) missing.push(key);
+  }
+  return missing;
+}
+
+// Deterministic guard: impossible date ranges (a tailored CV once rendered
+// "10/2021 to 09/2021"). Any range whose end predates its start is flagged.
+function impossibleDateRanges(cvText: string): string[] {
+  const MONTHS: Record<string, number> = { jan: 1, feb: 2, mar: 3, apr: 4, may: 5, jun: 6, jul: 7, aug: 8, sep: 9, oct: 10, okt: 10, nov: 11, dec: 12, dez: 12 };
+  const toComparable = (token: string): number | null => {
+    const numeric = token.match(/^(0?[1-9]|1[0-2])\/(20[0-3]\d)$/);
+    if (numeric) return Number(numeric[2]) * 12 + Number(numeric[1]);
+    const named = token.match(/^([A-Za-z]{3,9})\.?\s+(20[0-3]\d)$/);
+    if (named) {
+      const month = MONTHS[named[1].slice(0, 3).toLowerCase()];
+      return month ? Number(named[2]) * 12 + month : null;
+    }
+    const yearOnly = token.match(/^(20[0-3]\d)$/);
+    return yearOnly ? Number(yearOnly[1]) * 12 + 6 : null;
+  };
+  const DATE = "(?:[01]?\\d\\/20[0-3]\\d|[A-Za-z]{3,9}\\.?\\s+20[0-3]\\d|20[0-3]\\d)";
+  const flagged: string[] = [];
+  for (const match of cvText.matchAll(new RegExp(`(${DATE})\\s*(?:to|bis|[–—-])\\s*(${DATE})`, "gi"))) {
+    const start = toComparable(match[1].trim());
+    const end = toComparable(match[2].trim());
+    if (start !== null && end !== null && end < start) flagged.push(match[0]);
+  }
+  return flagged;
+}
+
+// Deterministic guard: native/bilingual-level language claims the candidate's
+// materials don't literally support (models upgrade "professional German" to
+// "Muttersprache" when the job ad is German — in any language, so a plain
+// regex, not the reviewer, has to catch it).
+function unsupportedNativeClaims(sourceMaterials: string, cvText: string): string[] {
+  const languages = ["german", "deutsch", "english", "englisch", "french", "französisch", "spanish", "italian"];
+  const nativeWords = "(?:native|bilingual|muttersprache|mother\\s*tongue|c2)";
+  // Sources often arrive JSON-stringified: "\n" is then two literal characters
+  // and a "same line" proximity check silently spans what were separate lines
+  // (an old columnar CV export made "…Native … <newline> German…" look like a
+  // supported native-German claim). Restore real newlines before matching.
+  const normalizedSource = sourceMaterials.replace(/\\r/g, "").replace(/\\n/g, "\n");
+  const flagged: string[] = [];
+  for (const lang of languages) {
+    // The gap must not cross list separators (· , ; |) — otherwise adjacent
+    // items like "English — Not specified · Persian — Native" pair the wrong
+    // language with "Native".
+    const claim = new RegExp(`\\b${nativeWords}\\b[^.\\n·,;|]{0,60}\\b${lang}\\b|\\b${lang}\\b[^.\\n·,;|]{0,60}\\b${nativeWords}\\b`, "i");
+    if (claim.test(cvText) && !claim.test(normalizedSource)) flagged.push(lang);
+  }
+  return flagged;
+}
+
+// Ask the cheap reviewer whether the produced CV text contains anything not
+// backed by the candidate's real materials, and merge in the deterministic
+// job-term leak check. Returns UNSUPPORTED lines (empty string when clean).
+// Deterministic proof checks that need no model: leftover pipeline artifacts
+// that must never reach a delivered CV.
+function proofArtifacts(cvText: string): string[] {
+  const issues: string[] = [];
+  if (/<<<|>>>/.test(cvText)) issues.push("PROOF: leftover '<<<' / '>>>' marker fragments — remove them.");
+  if (/@@\d+@@/.test(cvText)) issues.push("PROOF: leftover '@@n@@' slot markers — remove them.");
+  if (/\b(lorem|ipsum|TODO|PLACEHOLDER|xxx)\b/i.test(cvText)) issues.push("PROOF: placeholder text (lorem/TODO/xxx) — replace with real content.");
+  return issues;
+}
+
+async function unsupportedCritique(reviewModel: string, model: string, baseText: string, job: JobContext, cvText: string): Promise<string> {
+  if (cvText.trim().length < 40) return "";
+  const lines: string[] = [];
+  for (const term of leakedJobTerms(job.description, baseText, cvText)) {
+    lines.push(`UNSUPPORTED: "${term}" — this comes from the job ad, not the candidate's materials. Remove it everywhere (including "-style" analogies); if it is a real gap, it belongs in the checklist as "missing".`);
+  }
+  for (const lang of unsupportedNativeClaims(baseText, cvText)) {
+    lines.push(`UNSUPPORTED: a native/bilingual-level claim for "${lang}" — the candidate's materials do NOT state that level. Use their real level verbatim from the materials (e.g. "German — Full Professional Proficiency"); the candidate's native language is whatever the materials say it is.`);
+  }
+  for (const range of impossibleDateRanges(cvText)) {
+    lines.push(`UNSUPPORTED: the date range "${range}" ends before it starts — replace it with the exact real dates from the candidate's materials.`);
+  }
+  lines.push(...proofArtifacts(cvText));
+  if (reviewModel && reviewModel !== model) {
+    const critique = await reviewCvDraft(reviewModel, baseText, job.description, cvText);
+    lines.push(...critique.split("\n").filter((line) => /^\s*(UNSUPPORTED|PROOF):/i.test(line)));
+  }
+  return lines.join("\n").trim();
+}
+
 async function fillTemplateDocx(input: {
   model: string;
+  reviewModel?: string;
   templateDocx: Buffer;
   baseCv: unknown;
   supportingMaterials: SupportingMaterial[];
@@ -385,47 +644,106 @@ async function fillTemplateDocx(input: {
     ? (input.baseCv as { rawText: string }).rawText
     : JSON.stringify(input.baseCv);
 
-  const userPayload = [
-    `JOB TITLE: ${input.job.title}`,
-    `COMPANY: ${input.job.company}`,
-    `LOCATION: ${input.job.location ?? "Not specified"}`,
-    "",
-    "JOB DESCRIPTION:",
-    input.job.description,
-    "",
-    "CANDIDATE'S REAL CV (the only source of facts):",
-    baseText,
-    "",
-    "SUPPORTING MATERIALS:",
-    JSON.stringify(input.supportingMaterials),
-    "",
-    `USER INSTRUCTIONS: ${input.instructions || "(none)"}`,
-    "",
-    "CV TEMPLATE SLOTS (each holds SAMPLE text — replace with the candidate's real, tailored content that fits the slot):",
-    numbered
-  ].join("\n");
+  const runFill = async (extraInstruction: string) => {
+    const userPayload = [
+      `JOB TITLE: ${input.job.title}`,
+      `COMPANY: ${input.job.company}`,
+      `LOCATION: ${input.job.location ?? "Not specified"}`,
+      "",
+      "JOB DESCRIPTION:",
+      input.job.description,
+      "",
+      "CANDIDATE'S REAL CV (the only source of facts):",
+      baseText,
+      "",
+      "SUPPORTING MATERIALS:",
+      JSON.stringify(input.supportingMaterials),
+      "",
+      `USER INSTRUCTIONS: ${input.instructions || "(none)"}${extraInstruction}`,
+      "",
+      "CV TEMPLATE SLOTS (each holds SAMPLE text — replace with the candidate's real, tailored content that fits the slot):",
+      numbered
+    ].join("\n");
+    const response = await runLlmGuarded({
+      model: input.model,
+      responseFormat: "text",
+      maxTokens: 8000,
+      messages: [
+        { role: "system", content: TEMPLATE_FILL_SYSTEM_PROMPT },
+        { role: "user", content: userPayload }
+      ]
+    });
+    return parseDocxResponse(response, segments);
+  };
+  const cvTextOf = (parsed: { replacements: Map<number, string> }) =>
+    segments.map((segment) => parsed.replacements.get(segment.index) ?? segment.text).filter((line) => line.trim().length > 0).join("\n");
 
-  const response = await runLlmGuarded({
-    model: input.model,
-    responseFormat: "text",
-    maxTokens: 8000,
-    messages: [
-      { role: "system", content: TEMPLATE_FILL_SYSTEM_PROMPT },
-      { role: "user", content: userPayload }
-    ]
-  });
+  // Content slots the model left holding the template's SAMPLE text. Headings
+  // legitimately stay; any slot longer than ~3 words must become real content —
+  // this guarantees every section the design has (education, languages,
+  // certifications…) actually gets filled.
+  const unfilledSlots = (result: { replacements: Map<number, string> }) =>
+    candidates
+      .filter((segment) => segment.text.trim().split(/\s+/).length > 3 && !result.replacements.has(segment.index))
+      .map((segment) => segment.index);
 
-  const parsed = parseDocxResponse(response, segments);
+  // Fixed designs break visually when a slot's text outgrows its sample: short
+  // label slots (skill names next to rating bars, headers) wrap onto a second
+  // line and collide with the template's decorative shapes. Budget per slot:
+  // tight for short labels, more lenient for paragraph slots.
+  const sampleByIndex = new Map(candidates.map((segment) => [segment.index, segment.text.trim()]));
+  // Fixed one-page designs anchor their graphics (skill bars, dividers) to the
+  // page, so text slots must stay at ~the sample's size or everything below
+  // shifts against the artwork.
+  const slotBudget = (sample: string) =>
+    sample.length < 60 ? Math.max(Math.round(sample.length * 1.4), sample.length + 8) : Math.round(sample.length * 1.1) + 15;
+  const overLengthSlots = (result: { replacements: Map<number, string> }) => {
+    const over: Array<{ index: number; budget: number; actual: number }> = [];
+    for (const [index, value] of result.replacements) {
+      const sample = sampleByIndex.get(index);
+      if (!sample) continue;
+      const budget = slotBudget(sample);
+      if (value.length > budget) over.push({ index, budget, actual: value.length });
+    }
+    return over;
+  };
+
+  const sourceForReview = `${baseText}\n\nEVIDENCE MATERIALS:\n${JSON.stringify(input.supportingMaterials)}`;
+  let parsed = await runFill("");
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const critique = await unsupportedCritique(input.reviewModel || "", input.model, sourceForReview, input.job, cvTextOf(parsed));
+    const missing = unfilledSlots(parsed);
+    const over = overLengthSlots(parsed);
+    const droppedRoles = missingRangeStarts(baseText, cvTextOf(parsed));
+    if (!critique && !missing.length && !over.length && !droppedRoles.length) break;
+    const fixes: string[] = [];
+    if (critique) fixes.push(`CRITICAL FIXES — lines flagged UNSUPPORTED are invented/unbacked content: do NOT include them or anything like them (use ONLY facts from the candidate's real materials). Lines flagged PROOF are proofreading defects (spelling, grammar, cut-off text, artifacts, inconsistent figures): fix each exactly as stated:\n${critique}`);
+    if (missing.length) fixes.push(`COMPLETENESS FIX — these slots still contain the template's sample text: ${missing.map((index) => `@@${index}@@`).join(", ")}. Fill EVERY one of them with the candidate's real content (condense or reuse real facts where needed — the sample person's text must never remain in the final CV).`);
+    if (over.length) fixes.push(`LAYOUT FIX — these slots are LONGER than the fixed design allows and their text will collide with the template's graphics. Shorten each to AT MOST the given character count (keep the most job-relevant words): ${over.map((o) => `@@${o.index}@@ ≤ ${o.budget} chars (currently ${o.actual})`).join("; ")}.`);
+    if (droppedRoles.length) fixes.push(`MISSING ROLES FIX — positions starting ${droppedRoles.join(", ")} from the candidate's real history are absent, creating visible employment gaps. Every role must appear WITH its dates: when experience slots are scarce, merge the older roles into the last experience slot as one compact 'Earlier:' line (title, employer, dates each).`);
+    parsed = await runFill(`\n\n${fixes.join("\n\n")}`);
+  }
+
+  // Hard fallback: if short label slots are STILL too long, cut at a word
+  // boundary — an abbreviated label beats text hidden under a rating bar.
+  // Never cut slots carrying date ranges: dates are load-bearing (a trimmed
+  // "Earlier: BVAEB (02/2019 –" would delete employment history).
+  const HAS_DATES = /(?:0?\d\/20[0-3]\d|[A-Za-z]{3,9}\.?\s+20[0-3]\d)\s*(?:to|bis|[–—-])/i;
+  for (const { index, budget } of overLengthSlots(parsed)) {
+    const sample = sampleByIndex.get(index) ?? "";
+    if (sample.length >= 60) continue; // never hard-cut paragraph slots
+    if (HAS_DATES.test(parsed.replacements.get(index) ?? "")) continue;
+    const value = parsed.replacements.get(index) ?? "";
+    const cut = value.slice(0, budget + 1);
+    const lastSpace = cut.lastIndexOf(" ");
+    parsed.replacements.set(index, (lastSpace > budget * 0.5 ? cut.slice(0, lastSpace) : cut.slice(0, budget)).replace(/[,;:&/-]\s*$/, "").trim());
+  }
+
   const replacements = parsed.replacements;
   const docxBuffer = replacements.size
     ? applyDocxReplacements(input.templateDocx, replacements)
     : input.templateDocx;
-  const cvText = segments
-    .map((segment) => replacements.get(segment.index) ?? segment.text)
-    .filter((line) => line.trim().length > 0)
-    .join("\n");
-
-  return { docxBuffer, cvText, coverLetter: parsed.coverLetter, checklist: parsed.checklist };
+  return { docxBuffer, cvText: cvTextOf(parsed), coverLetter: parsed.coverLetter, checklist: parsed.checklist };
 }
 
 function parseDocxResponse(response: string, segments: Array<{ index: number; text: string }>) {
@@ -461,9 +779,13 @@ function parseDocxResponse(response: string, segments: Array<{ index: number; te
       replacements.set(lastIndex, `${replacements.get(lastIndex) ?? ""} ${line.trim()}`.trim());
     }
   }
-  // Drop no-op or emptied replacements so we never blank out a real paragraph.
+  // Strip any stray <<<MARKER>>> tokens the model may have invented inside a
+  // rewritten paragraph (e.g. a made-up <<<PROJECTS_SECTION>>>), then drop no-op
+  // or emptied replacements so we never blank out a real paragraph.
   for (const [index, value] of replacements) {
-    if (!value.trim()) replacements.delete(index);
+    const cleaned = value.replace(/<<<[^>]*>>>/g, " ").replace(/\s{2,}/g, " ").trim();
+    if (!cleaned) replacements.delete(index);
+    else if (cleaned !== value) replacements.set(index, cleaned);
   }
 
   const checklist = extractLooseJson<ChecklistItem[]>(checklistRaw);
@@ -494,7 +816,10 @@ async function runLlmGuarded(request: Parameters<typeof runLlm>[0]) {
 const TEMPLATE_SYSTEM_PROMPT =
   "You convert a candidate's real CV into structured JSON and tailor it to one job.\n\n" +
   "FAITHFULNESS (most important): Use ONLY facts present in the candidate's CV and supporting materials. Keep the candidate's real professional identity, role, employers, dates, and facts exactly. Do NOT rebrand them into a different profession or invent employers, titles, dates, degrees, certificates, tools, skills, metrics, or achievements. Reordering and rephrasing real content to emphasize what is most relevant to this job is allowed; fabricating is not.\n" +
-  "STRICT — no new tools/skills: Do NOT add any tool, technology, framework, library, certification, or skill that is not LITERALLY written in the candidate's materials — not even closely related ones (e.g. do NOT add 'Anthropic' just because 'OpenAI' is present; do NOT add 'Terraform', 'AWS', 'Kubernetes', or '-ready'/'-capable'/'-friendly' qualifiers). Copy skill names and tech-stack items verbatim from the source; never expand, infer, round up, or pad a list. The same rule applies to the summary, headline, and stats. If the job requires a tool or qualification the candidate lacks, put it in the checklist as 'missing' or 'address' — never in the CV or cover letter.\n\n" +
+  "SOURCES ARE EQUAL: The candidate's CV and the SUPPORTING MATERIALS are equally valid sources of real facts. The materials are often NEWER than the base CV — roles, projects, certifications, and skills that appear only in the supporting materials are REAL and MUST be included when relevant to the job; adding them is required, not fabrication. When the evidence describes a role as the candidate's own position at a company that the base CV frames only as a client or consultancy assignment, follow the NEWER evidence: list it as its own experience entry with its dates. Order experience newest first; the candidate's current role leads the section.\n" +
+  "USER INSTRUCTIONS ARE BINDING: whatever the USER INSTRUCTIONS say about which roles, projects, dates, or emphasis to include is a hard requirement (as long as it is consistent with the materials) — never silently ignore them.\n" +
+  "STRICT — no new tools/skills: Do NOT add any tool, technology, framework, library, product, brand, certification, or skill that is not LITERALLY written in the candidate's materials — not even closely related ones or as a '-style' analogy (e.g. do NOT add 'Anthropic' just because 'OpenAI' is present; do NOT add 'n8n', 'Zapier', 'Terraform', 'AWS', 'Kubernetes', or '-ready'/'-capable'/'-friendly'/'-style' qualifiers). Copy skill names and tech-stack items verbatim from the source; never expand, infer, round up, or pad a list. The same rule applies to the summary, headline, and stats. If the job requires a tool or qualification the candidate lacks, put it in the checklist as 'missing' or 'address' — never in the CV or cover letter.\n\n" +
+  DETAIL_GUIDANCE +
   "Respond with EXACTLY these three sections, each starting with its marker on its own line, and nothing else:\n\n" +
   CV_JSON_MARKER + "\n" +
   "A single valid JSON object with this shape:\n" +
@@ -502,15 +827,62 @@ const TEMPLATE_SYSTEM_PROMPT =
   "Section types and their fields:\n" +
   '  - "pills":      { "pills": string[] }            // short items joined inline, e.g. clients / sectors\n' +
   '  - "bullets":    { "bullets": [{"lead"?: string, "text": string}] }   // impact points, certifications\n' +
-  '  - "techstack":  { "rows": [{"label": string, "value": string}] }     // skills grouped by category\n' +
-  '  - "experience": { "entries": [{"title": string, "meta"?: string, "bullets": [{"lead"?: string, "text": string}]}] }   // jobs AND education\n' +
-  '  - "projects":   { "entries": [{"title": string, "description": string, "tags"?: string}] }\n' +
+  '  - "techstack":  { "rows": [{"label": string, "value": string}] }     // TOOLS / TECH STACK grouped by category (Languages, Test Automation, CI/CD, Cloud…)\n' +
+  '  - "experience": { "entries": [{"title": string, "meta"?: string, "bullets": [{"lead"?: string, "text": string}]}] }   // jobs AND education; 3-6 detailed bullets per real role\n' +
+  '  - "projects":   { "entries": [{"title": string, "description": string, "tags"?: string}] }   // real projects with their impact/metrics\n' +
   '  - "languages":  { "items": [{"label": string, "value"?: string}] }\n' +
-  "Include the candidate's real sections (e.g. clients/sectors, impact, skills/tech stack, experience, selected projects, education, certifications, languages). 3-4 short stats tiles. Keep it strictly valid JSON.\n\n" +
+  "Build a COMPLETE CV from the candidate's real content: put contact/links in \"contact\"; a professional \"summary\"; 3-4 real \"stats\" tiles; a \"techstack\" TOOLS section grouping their real tools; a rich \"experience\" section with 3-6 substantive bullets per role; a \"projects\" section for real selected work; plus education, certifications, and languages when present. Keep it strictly valid JSON.\n\n" +
   COVER_MARKER + "\n" +
   "A concise, specific cover letter as plain text. Only reference real experience.\n\n" +
   CHECKLIST_MARKER + "\n" +
   'A valid JSON array; each item is {"requirement": string, "status": "met"|"missing"|"address", "evidence": string, "plan": string}.';
+
+// Deterministic tech-resume completeness gate (CareerFoundry-derived): checks a
+// structured CV for the mandatory sections the candidate's materials actually
+// support. Anything missing forces one corrective regeneration — completeness
+// is enforced by code, not left to the model's mood.
+function guideGaps(cv: StructuredCv, source: string): string[] {
+  const gaps: string[] = [];
+  const sections = cv.sections ?? [];
+  const headings = sections.map((section) => section.heading.toLowerCase()).join(" | ");
+  const types = new Set(sections.map((section) => section.type));
+  const contact = (cv.contact ?? []).join(" ");
+
+  if (!types.has("techstack")) gaps.push('a dedicated TOOLS / TECH STACK section (type "techstack") grouping the candidate\'s real tools by category');
+  const experience = sections.find((section) => section.type === "experience" && /experience|work|history|berufserfahrung/i.test(section.heading));
+  if (!experience || !(experience.entries ?? []).length) {
+    gaps.push("a WORK EXPERIENCE section with the candidate's real roles");
+  } else {
+    const thin = (experience.entries ?? []).filter((entry) => (entry.bullets ?? []).length < 3);
+    if (thin.length) gaps.push(`3-6 substantive bullets for every main role (${thin.length} role(s) currently have fewer than 3)`);
+  }
+  if (!/education|ausbildung/i.test(headings)) gaps.push("an EDUCATION section (degrees with institution and year)");
+  if (/istqb|ireb|tricentis|certificat|certified/i.test(source) && !/certif|accomplish|qualification/i.test(headings)) {
+    gaps.push("a CERTIFICATIONS section — the materials contain real certifications (e.g. ISTQB/IREB/Tricentis)");
+  }
+  if (/languages?\b|english|german|persian|deutsch|farsi/i.test(source) && !types.has("languages") && !/language|sprachen/i.test(headings)) {
+    gaps.push("a LANGUAGES section with the candidate's real proficiency levels, verbatim from the materials");
+  }
+  if (/linkedin|github/i.test(source) && !/linkedin|github/i.test(contact)) {
+    gaps.push("the candidate's LinkedIn/GitHub link in the contact lines (it is present in the materials)");
+  }
+  if (/wohni|claraven/i.test(source) && !types.has("projects") && !/project/i.test(headings)) {
+    gaps.push("a PROJECTS section for the candidate's real selected projects");
+  }
+  if (!/vienna|wien|\d{4}\s|austria/i.test(contact) && /vienna|wien|austria/i.test(source)) {
+    gaps.push("the candidate's location (city, country) in the contact lines");
+  }
+  // Recency: the CV's newest year must not lag the materials' newest year —
+  // otherwise the candidate's most recent role/projects were dropped (models
+  // tend to trust the older base CV over newer evidence).
+  const maxYear = (text: string) => Math.max(0, ...(text.match(/20[12]\d/g) ?? []).map(Number));
+  const cvYear = maxYear(JSON.stringify(cv));
+  const sourceYear = maxYear(source);
+  if (sourceYear && cvYear && sourceYear > cvYear) {
+    gaps.push(`the candidate's MOST RECENT roles and projects — the materials contain entries up to ${sourceYear} (newer roles/projects in the evidence), but the draft's newest entry is from ${cvYear}. The newest real role must appear first in experience`);
+  }
+  return gaps;
+}
 
 // Template mode: extract the candidate's real CV into a StructuredCv and tailor
 // it for the job in one call (CV as JSON, cover letter as plain text, checklist
@@ -527,7 +899,7 @@ async function generateTemplateCv(input: {
     ? (input.baseCv as { rawText: string }).rawText
     : JSON.stringify(input.baseCv);
 
-  const userPayload = [
+  const buildPayload = (addendum: string) => [
     `JOB TITLE: ${input.job.title}`,
     `COMPANY: ${input.job.company}`,
     `LOCATION: ${input.job.location ?? "Not specified"}`,
@@ -538,24 +910,88 @@ async function generateTemplateCv(input: {
     "SUPPORTING MATERIALS (facts about the candidate, evidence only):",
     JSON.stringify(input.supportingMaterials),
     "",
-    `USER INSTRUCTIONS: ${input.instructions || "(none)"}`,
+    `USER INSTRUCTIONS: ${input.instructions || "(none)"}${addendum}`,
     "",
     "CANDIDATE CV (extract the real content from this; never invent):",
     baseText
   ].join("\n");
 
-  const response = await runLlmGuarded({
-    model: input.model,
-    responseFormat: "text",
-    maxTokens: 8000,
-    messages: [
-      { role: "system", content: TEMPLATE_SYSTEM_PROMPT },
-      { role: "user", content: userPayload }
-    ]
-  });
+  const generate = async (addendum: string) => {
+    const response = await runLlmGuarded({
+      model: input.model,
+      responseFormat: "text",
+      maxTokens: 12000,
+      messages: [
+        { role: "system", content: TEMPLATE_SYSTEM_PROMPT },
+        { role: "user", content: buildPayload(addendum) }
+      ]
+    });
+    return parseTemplateResponse(response, baseText);
+  };
 
-  const parsed = parseTemplateResponse(response, baseText);
-  const cv = await reviewAndRefineStructured(input.reviewModel || "", input.model, baseText, input.job, parsed.cv);
+  const firstRole = (cv: StructuredCv) => {
+    const exp = (cv.sections ?? []).find((s) => s.type === "experience" && /experience|work/i.test(s.heading));
+    const entry = (exp?.entries ?? [])[0];
+    return entry ? `${entry.title} ${entry.meta ?? ""}` : "(none)";
+  };
+  const sourceForGaps = `${baseText}\n${JSON.stringify(input.supportingMaterials)}`;
+  let parsed = await generate("");
+  const gaps = guideGaps(parsed.cv, sourceForGaps);
+  if (gaps.length) {
+    // One corrective pass: regenerate with the concrete list of what a complete
+    // tech resume still needs (only sections the real materials support).
+    const retry = await generate(
+      `\n\nCOMPLETENESS FIX — your previous draft was missing mandatory sections. Regenerate the FULL response and include, using ONLY real content from the materials:\n- ${gaps.join("\n- ")}`
+    );
+    if (guideGaps(retry.cv, sourceForGaps).length < gaps.length) parsed = retry;
+  }
+
+  let cv = await reviewAndRefineStructured(input.reviewModel || "", input.model, baseText, input.supportingMaterials, input.job, parsed.cv);
+  // Refine may improve sections but must never DROP one (e.g. Languages).
+  // Restore any pre-refine section that vanished — deterministically.
+  const norm = (heading: string) => heading.toLowerCase().replace(/[^a-z]/g, "");
+  for (const section of parsed.cv.sections) {
+    const uniqueTypes = ["techstack", "projects", "languages", "pills"];
+    const sameTypeSurvives = cv.sections.some((existing) => existing.type === section.type);
+    const headingSurvives = cv.sections.some((existing) => norm(existing.heading) === norm(section.heading));
+    if ((uniqueTypes.includes(section.type) && !sameTypeSurvives) || (!uniqueTypes.includes(section.type) && !headingSurvives)) {
+      cv.sections.push(section);
+    }
+  }
+
+  // Deterministic enforcement (this path must never rely on the LLM reviewer
+  // alone): leaked job-ad terms, upgraded language levels, impossible dates,
+  // and artifacts each force a structured correction until clean (max 2).
+  const detIssuesOf = (candidate: StructuredCv): string[] => {
+    const flat = flattenStructuredCv(candidate);
+    return [
+      ...leakedJobTerms(input.job.description, sourceForGaps, flat).map((term) => `UNSUPPORTED: "${term}" — job-ad term not present in the candidate's materials; remove it everywhere.`),
+      ...unsupportedNativeClaims(sourceForGaps, flat).map((lang) => `UNSUPPORTED: native/bilingual-level claim for "${lang}" — use the candidate's real level verbatim from the materials.`),
+      ...impossibleDateRanges(flat).map((range) => `UNSUPPORTED: the date range "${range}" ends before it starts — use the real dates from the materials.`),
+      ...missingRangeStarts(baseText, flat).map((start) => `MISSING ROLE: the position starting ${start} from the candidate's history is absent — every real role must appear (condensed to one line is fine, deleted is not; a missing role creates a visible employment gap).`),
+      ...proofArtifacts(flat)
+    ];
+  };
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const detIssues = detIssuesOf(cv);
+    if (!detIssues.length) break;
+    try {
+      const response = await runLlmGuarded({
+        model: input.model,
+        responseFormat: "text",
+        maxTokens: 8000,
+        messages: [
+          { role: "system", content: "Fix this CV (a JSON object) according to the violation notes. Use ONLY facts present in the ORIGINAL CV + EVIDENCE. Keep the EXACT same JSON shape, section types, and content except for the listed fixes. Return ONLY the corrected JSON object." },
+          { role: "user", content: `VIOLATIONS TO FIX:\n${detIssues.join("\n")}\n\nORIGINAL CV + EVIDENCE:\n${sourceForGaps.slice(0, 14000)}\n\nCURRENT CV JSON:\n${JSON.stringify(cv)}` }
+        ]
+      });
+      const fixed = extractLooseJson<StructuredCv>(response);
+      if (isStructuredCv(fixed)) cv = normalizeStructuredCv(fixed);
+      else break;
+    } catch {
+      break;
+    }
+  }
   return { ...parsed, cv };
 }
 
@@ -592,17 +1028,18 @@ async function reviewCvDraft(reviewModel: string, baseText: string, jobDescripti
     const response = await runLlm({
       model: reviewModel,
       responseFormat: "text",
-      maxTokens: 800,
+      maxTokens: 1400,
       messages: [
         {
           role: "system",
           content:
             "You are a sharp CV reviewer. Compare the candidate's ORIGINAL CV and the TAILORED CV against the JOB. " +
-            "Give 3-7 short, concrete improvement notes: stronger wording, better ordering, real relevant experience to surface, conciseness, and keywords from the job description. " +
-            "CRUCIAL — truthfulness check first: verify every employer, job title, date, degree, certificate, tool, skill, metric, and achievement in the TAILORED CV against the ORIGINAL CV. Flag each invented or unsupported claim on its own line starting with 'UNSUPPORTED:' and say to remove it. Rephrased or reordered real facts are fine; new facts are not. " +
-            "Bullet points only, no preamble. If it is already excellent and faithful, reply with exactly: OK."
+            "Give concrete improvement notes: stronger wording, better ordering, conciseness, and keywords from the job description. " +
+            "CRUCIAL — truthfulness check first: verify every employer, job title, date, degree, certificate, tool, skill, metric, and achievement in the TAILORED CV against the ORIGINAL CV. In particular: (a) list every specific product / tool / technology / framework / brand name that appears in the TAILORED CV (e.g. n8n, Zapier, Docker, AWS) and, for each one NOT written verbatim in the ORIGINAL CV, output a line 'UNSUPPORTED: <name>' — including names used as an analogy or with a '-style' suffix; (b) check every LANGUAGE PROFICIENCY claim (native / bilingual / fluent / C1 / Muttersprache …) — if the TAILORED CV states a higher level than the ORIGINAL CV literally does (e.g. 'native German' when the original says 'German — professional proficiency'), flag it 'UNSUPPORTED:' with the correct real level; (c) check every DATE RANGE — start and end months/years must match the materials exactly; flag altered, swapped, or impossible dates 'UNSUPPORTED:' with the correct real dates; (d) PROOFREAD the entire TAILORED CV like a professional editor — flag every spelling or grammar error, truncated or cut-off word or sentence, stray symbol or formatting artifact, doubled word, and internally inconsistent figure (e.g. two different totals for years of experience) on its own line starting with 'PROOF:' and state the exact fix. Flag any other invented or unsupported claim the same way. Rephrased or reordered real facts are fine; new facts are not. " +
+            "Then a COMPLETENESS check: if the ORIGINAL CV (or evidence) contains real, relevant experience, tools, projects, achievements, or metrics that are MISSING or under-described in the TAILORED CV, flag each on its own line starting with 'ADD:' naming the real detail to surface (e.g. a real tool to list, a role that needs more bullets, a project to include). A thorough, detailed CV is the goal — flag thinness. Only surface detail that is genuinely in the ORIGINAL CV or evidence; never suggest inventing anything. " +
+            "Bullet points only, no preamble. If it is already excellent, faithful, and thorough, reply with exactly: OK."
         },
-        { role: "user", content: JSON.stringify({ job: jobDescription.slice(0, 3000), originalCv: baseText.slice(0, 6000), tailoredCv: tailoredText.slice(0, 6000) }) }
+        { role: "user", content: JSON.stringify({ job: jobDescription.slice(0, 3000), originalCv: baseText.slice(0, 14000), tailoredCv: tailoredText.slice(0, 8000) }) }
       ]
     });
     return response.trim();
@@ -611,9 +1048,18 @@ async function reviewCvDraft(reviewModel: string, baseText: string, jobDescripti
   }
 }
 
-async function reviewAndRefineText(reviewModel: string, tailorModel: string, baseText: string, job: JobContext, tailoredText: string): Promise<string> {
+// IMPORTANT: both refine helpers must receive the candidate's FULL source of
+// truth (base CV + evidence materials), not just the base CV — otherwise real
+// roles/projects that exist only in newer evidence get flagged UNSUPPORTED by
+// the reviewer and stripped out of the draft.
+function fullSource(baseText: string, materials: SupportingMaterial[]): string {
+  return `${baseText}\n\nEVIDENCE MATERIALS (equally valid, often newer facts):\n${JSON.stringify(materials)}`;
+}
+
+async function reviewAndRefineText(reviewModel: string, tailorModel: string, baseText: string, materials: SupportingMaterial[], job: JobContext, tailoredText: string): Promise<string> {
   if (!reviewModel || reviewModel === tailorModel || tailoredText.trim().length < 40) return tailoredText;
-  const critique = await reviewCvDraft(reviewModel, baseText, job.description, tailoredText);
+  const source = fullSource(baseText, materials);
+  const critique = await reviewCvDraft(reviewModel, source, job.description, tailoredText);
   if (!critique || /^ok\b/i.test(critique)) return tailoredText;
   try {
     const response = await runLlmGuarded({
@@ -621,8 +1067,8 @@ async function reviewAndRefineText(reviewModel: string, tailorModel: string, bas
       responseFormat: "text",
       maxTokens: 8000,
       messages: [
-        { role: "system", content: "Improve the TAILORED CV using the reviewer's notes. Use ONLY facts present in the ORIGINAL CV — never add employers, titles, dates, degrees, certificates, tools, skills, metrics, or achievements not in it. REMOVE anything the reviewer flagged as UNSUPPORTED, fabricated, or not backed by the ORIGINAL CV. Keep the same language, section order, headings, and overall structure. Return ONLY the improved CV as plain text — no commentary, no markers." },
-        { role: "user", content: `JOB: ${job.title} at ${job.company}\n${job.description.slice(0, 3000)}\n\nORIGINAL CV:\n${baseText.slice(0, 6000)}\n\nCURRENT TAILORED CV:\n${tailoredText}\n\nREVIEWER NOTES:\n${critique}` }
+        { role: "system", content: "Improve the TAILORED CV using the reviewer's notes. Use ONLY facts present in the ORIGINAL CV + EVIDENCE — never add employers, titles, dates, degrees, certificates, tools, skills, metrics, or achievements not in them (facts appearing only in the evidence are REAL and allowed). REMOVE anything flagged 'UNSUPPORTED'. FIX everything flagged 'PROOF:' (spelling, grammar, cut-off words, artifacts, inconsistent figures) exactly as the note says. ADD the real detail flagged with 'ADD:' — expand thin roles into fuller bullets, surface missing real tools/projects — making the CV more thorough and detailed. Keep the same language, headings, and professional identity. Return ONLY the improved CV as plain text — no commentary, no markers." },
+        { role: "user", content: `JOB: ${job.title} at ${job.company}\n${job.description.slice(0, 3000)}\n\nORIGINAL CV + EVIDENCE:\n${source.slice(0, 16000)}\n\nCURRENT TAILORED CV:\n${tailoredText}\n\nREVIEWER NOTES:\n${critique}` }
       ]
     });
     const refined = stripFences(response);
@@ -632,9 +1078,10 @@ async function reviewAndRefineText(reviewModel: string, tailorModel: string, bas
   }
 }
 
-async function reviewAndRefineStructured(reviewModel: string, tailorModel: string, baseText: string, job: JobContext, cv: StructuredCv): Promise<StructuredCv> {
+async function reviewAndRefineStructured(reviewModel: string, tailorModel: string, baseText: string, materials: SupportingMaterial[], job: JobContext, cv: StructuredCv): Promise<StructuredCv> {
   if (!reviewModel || reviewModel === tailorModel) return cv;
-  const critique = await reviewCvDraft(reviewModel, baseText, job.description, flattenStructuredCv(cv));
+  const source = fullSource(baseText, materials);
+  const critique = await reviewCvDraft(reviewModel, source, job.description, flattenStructuredCv(cv));
   if (!critique || /^ok\b/i.test(critique)) return cv;
   try {
     const response = await runLlmGuarded({
@@ -642,8 +1089,8 @@ async function reviewAndRefineStructured(reviewModel: string, tailorModel: strin
       responseFormat: "text",
       maxTokens: 8000,
       messages: [
-        { role: "system", content: "Improve this CV (a JSON object) using the reviewer's notes. Use ONLY facts present in the ORIGINAL CV — never add employers, titles, dates, degrees, certificates, tools, skills, metrics, or achievements not in it. REMOVE anything the reviewer flagged as UNSUPPORTED, fabricated, or not backed by the ORIGINAL CV. Keep the EXACT same JSON shape (same keys and section types). Return ONLY the improved JSON object, nothing else." },
-        { role: "user", content: `REVIEWER NOTES:\n${critique}\n\nORIGINAL CV:\n${baseText.slice(0, 6000)}\n\nCURRENT CV JSON:\n${JSON.stringify(cv)}` }
+        { role: "system", content: "Improve this CV (a JSON object) using the reviewer's notes. Use ONLY facts present in the ORIGINAL CV + EVIDENCE — never add employers, titles, dates, degrees, certificates, tools, skills, metrics, or achievements not in them (facts appearing only in the evidence are REAL and allowed). REMOVE anything flagged 'UNSUPPORTED'. FIX everything flagged 'PROOF:' (spelling, grammar, cut-off words, artifacts, inconsistent figures) exactly as the note says. ADD the real detail flagged with 'ADD:' — expand thin roles into 3-6 fuller bullets, add a tools/tech-stack section and real projects when the content supports them — making the CV more thorough. Keep the EXACT same JSON shape (same keys and section types). Return ONLY the improved JSON object, nothing else." },
+        { role: "user", content: `REVIEWER NOTES:\n${critique}\n\nORIGINAL CV + EVIDENCE:\n${source.slice(0, 16000)}\n\nCURRENT CV JSON:\n${JSON.stringify(cv)}` }
       ]
     });
     const parsed = extractLooseJson<StructuredCv>(response);
@@ -745,9 +1192,10 @@ async function generateDocuments(input: {
           content:
             "You tailor job application materials for one candidate to one job.\n\n" +
             "FAITHFULNESS (most important): Use ONLY facts found in baseCvTemplate and supportingMaterials. Keep the candidate's real professional identity, headline, and career exactly as in baseCvTemplate. Do NOT rebrand them into a different profession or invent a new role title to match the job (for example, never relabel a petroleum / AI-automation engineer as a 'UI/UX Engineer'). NEVER invent or imply employers, job titles, dates, degrees, certificates, tools, skills, metrics, or achievements the candidate does not already have. Rephrasing, reordering, and emphasizing REAL facts is allowed; fabricating is not. If the job needs something the candidate lacks, record it in the checklist with status \"missing\" or \"address\" — never add it to the CV or cover letter.\n\n" +
+            DETAIL_GUIDANCE +
             "Respond with EXACTLY these three sections, each starting with its marker on its own line, in this order, and nothing before, between, or after them except the section content:\n\n" +
             `${CV_MARKER}\n` +
-            "The candidate's CV, keeping the SAME language, section order, headings, tone, wording style, professional identity, and overall layout as baseCvTemplate (if it has rawText, mirror that text's structure). Reorder and rephrase only to emphasize the candidate's REAL, existing achievements most relevant to this job. Make minimal changes; do not introduce a new persona. Output as plain text only.\n\n" +
+            "The candidate's CV, keeping the SAME language, headings style, tone, and professional identity as baseCvTemplate. Surface and elaborate the candidate's REAL, existing achievements most relevant to this job, following the completeness & detail guidance above (detailed experience bullets, a tools/tech section, real projects, links). Do not introduce a new persona or any invented fact. Output as plain text only.\n\n" +
             `${COVER_MARKER}\n` +
             "A concise, specific cover letter for this job, as plain text. Only reference real experience from the materials; do not fabricate roles, projects, or skills.\n\n" +
             `${CHECKLIST_MARKER}\n` +
@@ -770,7 +1218,7 @@ async function generateDocuments(input: {
       ? (input.baseCv as { rawText: string }).rawText
       : JSON.stringify(input.baseCv);
     const currentText = String((parsed.tailoredCv as { rawText?: unknown })?.rawText ?? "");
-    const refinedText = await reviewAndRefineText(input.reviewModel || "", input.model, baseText, input.job, currentText);
+    const refinedText = await reviewAndRefineText(input.reviewModel || "", input.model, baseText, input.supportingMaterials, input.job, currentText);
     if (refinedText !== currentText) {
       parsed.tailoredCv = buildTailoredCv(input.baseCv, refinedText);
     }

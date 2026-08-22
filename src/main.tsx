@@ -428,8 +428,14 @@ function JobSearch({ onOpenJob }: { onOpenJob: (jobId: string) => void }) {
     try { return localStorage.getItem("hideGatedJobs") !== "false"; } catch { return true; }
   });
   const allDisplayedJobs = historyJobs ?? jobs.data;
-  const displayedJobs = hideGated ? allDisplayedJobs.filter((job) => !job.gated) : allDisplayedJobs;
-  const hiddenGatedCount = allDisplayedJobs.length - displayedJobs.length;
+  // Jobs the user added themselves (pasted link / text / upload) are pinned in
+  // their own section — an 82% manual add must never drown under hundreds of
+  // higher-scoring search results.
+  const addedByYou = jobs.data.filter((job) => job.source === "manual" && (!hideGated || !job.gated));
+  const addedIds = new Set(addedByYou.map((job) => job.id));
+  const displayedJobs = (hideGated ? allDisplayedJobs.filter((job) => !job.gated) : allDisplayedJobs)
+    .filter((job) => !addedIds.has(job.id));
+  const hiddenGatedCount = allDisplayedJobs.length - (hideGated ? allDisplayedJobs.filter((job) => !job.gated).length : allDisplayedJobs.length);
 
   useEffect(() => {
     try { localStorage.setItem("hideGatedJobs", String(hideGated)); } catch { /* ignore */ }
@@ -440,6 +446,33 @@ function JobSearch({ onOpenJob }: { onOpenJob: (jobId: string) => void }) {
       setLocation(settings.data.defaultCity);
     }
   }, [settings.data.defaultCity, location]);
+
+  const renderJobCard = (job: (typeof jobs.data)[number]) => (
+    <article className="job-card" key={job.id}>
+      <div className="job-main">
+        <div>
+          <span className="job-company">{job.company}</span>
+          <h3>{job.title}</h3>
+          <p>{job.location ?? "Location not specified"} - {job.source} - {formatDate(job.updatedAt)}</p>
+        </div>
+        <StatusPill state={job.fitScore >= 75 ? "online" : job.fitScore >= 50 ? "warning" : "offline"} label={`${job.fitScore}% fit`} />
+      </div>
+      <p className="job-description">{job.descr}</p>
+      <ul className="reason-list">
+        {job.fitReasons.slice(0, 4).map((reason) => <li key={reason}>{reason}</li>)}
+      </ul>
+      <div className="job-actions">
+        <button className="button primary icon-button" onClick={() => onOpenJob(job.id)} type="button">
+          <WandSparkles size={17} />
+          <span>Review & Prepare</span>
+        </button>
+        <a className="button icon-button" href={job.url} rel="noreferrer" target="_blank">
+          <ExternalLink size={17} />
+          <span>Open Posting</span>
+        </a>
+      </div>
+    </article>
+  );
 
   const searchJobs = async (event: React.FormEvent) => {
     event.preventDefault();
@@ -656,34 +689,16 @@ function JobSearch({ onOpenJob }: { onOpenJob: (jobId: string) => void }) {
             <input type="checkbox" checked={hideGated} onChange={(event) => setHideGated(event.target.checked)} />
             <span>Hide login-only sites (LinkedIn, Glassdoor, Indeed…){hiddenGatedCount ? ` — ${hiddenGatedCount} hidden` : ""}</span>
           </label>
-          {displayedJobs.length === 0 ? <p className="empty-state">{hideGated && hiddenGatedCount ? "All matches are on login-only sites — untick the box above to see them." : "No jobs yet. Run a search after saving your Tavily key."}</p> : null}
+          {addedByYou.length ? (
+            <div className="added-jobs">
+              <h3 className="added-jobs-title">Added by you</h3>
+              <div className="job-list">{addedByYou.map(renderJobCard)}</div>
+              <h3 className="added-jobs-title">From searches</h3>
+            </div>
+          ) : null}
+          {displayedJobs.length === 0 && addedByYou.length === 0 ? <p className="empty-state">{hideGated && hiddenGatedCount ? "All matches are on login-only sites — untick the box above to see them." : "No jobs yet. Run a search after saving your Tavily key."}</p> : null}
           <div className="job-list">
-            {displayedJobs.map((job) => (
-              <article className="job-card" key={job.id}>
-                <div className="job-main">
-                  <div>
-                    <span className="job-company">{job.company}</span>
-                    <h3>{job.title}</h3>
-                    <p>{job.location ?? "Location not specified"} - {job.source} - {formatDate(job.updatedAt)}</p>
-                  </div>
-                  <StatusPill state={job.fitScore >= 75 ? "online" : job.fitScore >= 50 ? "warning" : "offline"} label={`${job.fitScore}% fit`} />
-                </div>
-                <p className="job-description">{job.descr}</p>
-                <ul className="reason-list">
-                  {job.fitReasons.slice(0, 4).map((reason) => <li key={reason}>{reason}</li>)}
-                </ul>
-                <div className="job-actions">
-                  <button className="button primary icon-button" onClick={() => onOpenJob(job.id)} type="button">
-                    <WandSparkles size={17} />
-                    <span>Review & Prepare</span>
-                  </button>
-                  <a className="button icon-button" href={job.url} rel="noreferrer" target="_blank">
-                    <ExternalLink size={17} />
-                    <span>Open Posting</span>
-                  </a>
-                </div>
-              </article>
-            ))}
+            {displayedJobs.map(renderJobCard)}
           </div>
         </div>
       </section>

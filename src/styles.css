@@ -763,6 +763,21 @@ input[type="checkbox"] {
   padding: 12px;
 }
 
+/* "Added by you" pinned jobs section */
+.added-jobs-title {
+  color: var(--accent-strong);
+  font-size: 0.72rem;
+  font-weight: 800;
+  letter-spacing: 0.09em;
+  margin: 14px 0 8px;
+  text-transform: uppercase;
+}
+
+.added-jobs .job-card {
+  border-color: var(--accent-border);
+  background: linear-gradient(180deg, var(--accent-soft), var(--surface) 30%);
+}
+
 /* Pinned local Codex option (user's ChatGPT plan) */
 .model-combo-option.codex {
   background: linear-gradient(90deg, var(--teal-soft), transparent 70%);

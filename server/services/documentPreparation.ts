@@ -40,7 +40,8 @@ const DETAIL_GUIDANCE =
   "  8. EDUCATION: relevant degrees with institution and year.\n" +
   "  9. CERTIFICATIONS and 10. LANGUAGES (with the candidate's real proficiency levels, verbatim).\n" +
   "KEYWORDS: mirror the exact terminology of the job description wherever the candidate genuinely has that skill (recruiters and ATS scanners match those words). Prefer specific and concrete over generic; every detail must trace back to the materials — more detail must never mean invented detail.\n" +
-  "CONFLICTS: when materials disagree on a fact (e.g. one says '5 years' and a newer one says '7+ years'), use the figure from the NEWEST material — the latest profile is the current truth.\n\n";
+  "CONFLICTS: when materials disagree on a fact (e.g. one says '5 years' and a newer one says '7+ years'), use the figure from the NEWEST material — the latest profile is the current truth.\n" +
+  "TAILORING = EMPHASIS, NEVER DELETION: include EVERY real position from the candidate's history — deleting a role creates a visible employment gap, which is worse than an unrelated role. Give job-relevant roles more and fuller bullets and bold lead-ins; condense less relevant roles to their title, employer, dates and 1-2 lines — but they STAY, with their dates.\n\n";
 
 type ChecklistItem = {
   requirement: string;
@@ -138,8 +139,13 @@ export async function prepareDocumentsForJob(jobId: string, instructions?: strin
   const produce = async (activeInstructions: string | undefined): Promise<Produced> => {
     if (gallery?.kind === "html") {
       const result = await generateTemplateCv({ model, reviewModel, baseCv, supportingMaterials: supporting, job: jobContext, instructions: activeInstructions });
+      let photoDataUrl: string | undefined;
+      if (gallery.wantsPhoto) {
+        const jpeg = await makeSquareJpeg(280);
+        if (jpeg) photoDataUrl = `data:image/jpeg;base64,${jpeg.toString("base64")}`;
+      }
       return {
-        templateHtml: gallery.render(result.cv),
+        templateHtml: gallery.render(result.cv, photoDataUrl),
         structuredCv: result.cv,
         tailoredCvJson: { ...(result.cv as unknown as Record<string, unknown>), rawText: flattenStructuredCv(result.cv) },
         coverLetter: result.coverLetter,
@@ -255,7 +261,8 @@ export async function prepareDocumentsForJob(jobId: string, instructions?: strin
     ...proofArtifacts(finalCvText),
     ...impossibleDateRanges(finalCvText).map((range) => `Impossible date range "${range}"`),
     ...unsupportedNativeClaims(gateSource, finalCvText).map((lang) => `Unsupported native-level language claim ("${lang}")`),
-    ...leakedJobTerms(job.descr, gateSource, finalCvText).map((term) => `"${term}" appears in the CV but only exists in the job ad, not your materials`)
+    ...leakedJobTerms(job.descr, gateSource, finalCvText).map((term) => `"${term}" appears in the CV but only exists in the job ad, not your materials`),
+    ...missingRangeStarts(baseTextForGate, finalCvText).map((start) => `The position starting ${start} is missing — this leaves a gap in your employment history`)
   ];
   if (finalIssues.length) {
     checklist.push({
@@ -469,7 +476,8 @@ const TEMPLATE_FILL_SYSTEM_PROMPT =
   "FAITHFULNESS (most important): Use ONLY facts from the candidate's real CV and supporting materials. NEVER invent employers, job titles, dates, degrees, certificates, tools, skills, metrics, or achievements. Never write a specific product, tool, brand, or framework name (e.g. n8n, Zapier, Docker, AWS) unless that exact name appears in the candidate's materials — and never use it as a '-style' analogy either. Rephrasing, reordering, and emphasizing REAL facts is allowed; fabricating is not. If the job requires something the candidate lacks, record it in the checklist as \"missing\" or \"address\" — never put it in the CV or cover letter. If the template has more slots than the candidate has real content, reuse or condense the candidate's real content sensibly — never fabricate. If a slot has no matching real content, use the closest real content or leave it unchanged.\n\n" +
   "DETAIL vs FIT (both matter): Within each slot, use the candidate's strongest, most specific real content — concrete achievements with real metrics and the actual tools/technologies named in their materials, never vague filler. BUT this is a FIXED one-page design: keep EVERY slot AT OR UNDER its sample text's length — if a slot's content would run longer than its sample, trim the least job-relevant detail instead of letting it grow. Overflowing slots push later sections (Education, Certifications) off the page, which is worse than a shorter bullet. LATER SECTIONS ARE MANDATORY: Education, certifications, and languages slots must always keep real content — never sacrifice them for longer bullets. For a longer, more detailed CV the candidate can pick the Navy / Energy template or the Word output.\n\n" +
   "LANGUAGES: Copy the candidate's real language proficiency levels VERBATIM from their materials (e.g. 'German — Full Professional Proficiency', 'Persian — Native'). NEVER upgrade a level — never call someone a native or fluent speaker of a language their materials don't literally state at that level, no matter what language the job posting is written in.\n" +
-  "CONFLICTS: when materials disagree on a fact (e.g. one says '5 years' and a newer one says '7+ years'), use the figure from the NEWEST material — the latest profile is the current truth.\n\n" +
+  "CONFLICTS: when materials disagree on a fact (e.g. one says '5 years' and a newer one says '7+ years'), use the figure from the NEWEST material — the latest profile is the current truth.\n" +
+  "TAILORING = EMPHASIS, NEVER DELETION: every real position from the candidate's history must appear — a deleted role creates a visible employment gap. Emphasize job-relevant roles with fuller content; when the template has fewer experience slots than the candidate has roles, MERGE the older roles into the last slot as one compact line (e.g. 'Earlier: Software Developer in Test, BVAEB (02/2019 - 09/2021); Researcher, University of Leoben (08/2015 - 12/2018)') so the timeline stays complete.\n\n" +
   "Respond with EXACTLY these three sections, each starting with its marker on its own line:\n\n" +
   SEGMENTS_MARKER + "\n" +
   "One line per slot you fill, in the form: @@<number>@@ <new text>  (use the numbers shown; output a line for every slot that should change).\n\n" +
@@ -497,6 +505,42 @@ function leakedJobTerms(jobDescription: string, sourceMaterials: string, cvText:
     const needle = token.toLowerCase();
     return tailored.includes(needle) && !source.includes(needle);
   });
+}
+
+// Deterministic guard: dropped work experience. Tailoring must EMPHASIZE, never
+// delete — a missing role leaves a visible gap in the career timeline. Every
+// date-range START in the base CV must appear (in some format) in the tailored
+// CV; a role can be condensed to one line, but its dates must survive.
+const MONTH_NAMES = ["january", "february", "march", "april", "may", "june", "july", "august", "september", "october", "november", "december"];
+function missingRangeStarts(baseText: string, cvText: string): string[] {
+  const source = baseText.replace(/\\r/g, "").replace(/\\n/g, "\n");
+  const rangeStart = /(\b(?:0?[1-9]|1[0-2])\/20[0-3]\d|\b[A-Za-z]{3,9}\.?\s+20[0-3]\d)\s*(?:to|bis|[–—-])\s*(?:0?\d?\d?\/?20[0-3]\d|[A-Za-z]{3,9}\.?\s+20[0-3]\d|Present|Current|heute)/gi;
+  const missing: string[] = [];
+  for (const match of source.matchAll(rangeStart)) {
+    // Education entries may legitimately be condensed to a single year
+    // ("M.Sc. — 2014"), so only EMPLOYMENT ranges are mandatory.
+    const context = source.slice(Math.max(0, (match.index ?? 0) - 100), (match.index ?? 0) + match[0].length + 40);
+    if (/master|bachelor|b\.?\s?sc|m\.?\s?sc|diploma|thesis|school|studium/i.test(context)) continue;
+    const token = match[1].trim();
+    let month = 0;
+    let year = 0;
+    const numeric = token.match(/^(\d{1,2})\/(20[0-3]\d)$/);
+    if (numeric) {
+      month = Number(numeric[1]);
+      year = Number(numeric[2]);
+    } else {
+      const named = token.match(/^([A-Za-z]{3,9})\.?\s+(20[0-3]\d)$/);
+      if (!named) continue;
+      month = MONTH_NAMES.findIndex((name) => name.startsWith(named[1].toLowerCase().slice(0, 3))) + 1;
+      year = Number(named[2]);
+    }
+    if (!month || !year) continue;
+    const monthName = MONTH_NAMES[month - 1];
+    const inCv = new RegExp(`\\b0?${month}\\/${year}\\b|\\b${monthName.slice(0, 3)}[a-z]*\\.?\\s+${year}\\b`, "i");
+    const key = `${month}/${year}`;
+    if (!inCv.test(cvText) && !missing.includes(key)) missing.push(key);
+  }
+  return missing;
 }
 
 // Deterministic guard: impossible date ranges (a tailored CV once rendered
@@ -670,19 +714,25 @@ async function fillTemplateDocx(input: {
     const critique = await unsupportedCritique(input.reviewModel || "", input.model, sourceForReview, input.job, cvTextOf(parsed));
     const missing = unfilledSlots(parsed);
     const over = overLengthSlots(parsed);
-    if (!critique && !missing.length && !over.length) break;
+    const droppedRoles = missingRangeStarts(baseText, cvTextOf(parsed));
+    if (!critique && !missing.length && !over.length && !droppedRoles.length) break;
     const fixes: string[] = [];
     if (critique) fixes.push(`CRITICAL FIXES — lines flagged UNSUPPORTED are invented/unbacked content: do NOT include them or anything like them (use ONLY facts from the candidate's real materials). Lines flagged PROOF are proofreading defects (spelling, grammar, cut-off text, artifacts, inconsistent figures): fix each exactly as stated:\n${critique}`);
     if (missing.length) fixes.push(`COMPLETENESS FIX — these slots still contain the template's sample text: ${missing.map((index) => `@@${index}@@`).join(", ")}. Fill EVERY one of them with the candidate's real content (condense or reuse real facts where needed — the sample person's text must never remain in the final CV).`);
     if (over.length) fixes.push(`LAYOUT FIX — these slots are LONGER than the fixed design allows and their text will collide with the template's graphics. Shorten each to AT MOST the given character count (keep the most job-relevant words): ${over.map((o) => `@@${o.index}@@ ≤ ${o.budget} chars (currently ${o.actual})`).join("; ")}.`);
+    if (droppedRoles.length) fixes.push(`MISSING ROLES FIX — positions starting ${droppedRoles.join(", ")} from the candidate's real history are absent, creating visible employment gaps. Every role must appear WITH its dates: when experience slots are scarce, merge the older roles into the last experience slot as one compact 'Earlier:' line (title, employer, dates each).`);
     parsed = await runFill(`\n\n${fixes.join("\n\n")}`);
   }
 
   // Hard fallback: if short label slots are STILL too long, cut at a word
   // boundary — an abbreviated label beats text hidden under a rating bar.
+  // Never cut slots carrying date ranges: dates are load-bearing (a trimmed
+  // "Earlier: BVAEB (02/2019 –" would delete employment history).
+  const HAS_DATES = /(?:0?\d\/20[0-3]\d|[A-Za-z]{3,9}\.?\s+20[0-3]\d)\s*(?:to|bis|[–—-])/i;
   for (const { index, budget } of overLengthSlots(parsed)) {
     const sample = sampleByIndex.get(index) ?? "";
     if (sample.length >= 60) continue; // never hard-cut paragraph slots
+    if (HAS_DATES.test(parsed.replacements.get(index) ?? "")) continue;
     const value = parsed.replacements.get(index) ?? "";
     const cut = value.slice(0, budget + 1);
     const lastSpace = cut.lastIndexOf(" ");
@@ -918,6 +968,7 @@ async function generateTemplateCv(input: {
       ...leakedJobTerms(input.job.description, sourceForGaps, flat).map((term) => `UNSUPPORTED: "${term}" — job-ad term not present in the candidate's materials; remove it everywhere.`),
       ...unsupportedNativeClaims(sourceForGaps, flat).map((lang) => `UNSUPPORTED: native/bilingual-level claim for "${lang}" — use the candidate's real level verbatim from the materials.`),
       ...impossibleDateRanges(flat).map((range) => `UNSUPPORTED: the date range "${range}" ends before it starts — use the real dates from the materials.`),
+      ...missingRangeStarts(baseText, flat).map((start) => `MISSING ROLE: the position starting ${start} from the candidate's history is absent — every real role must appear (condensed to one line is fine, deleted is not; a missing role creates a visible employment gap).`),
       ...proofArtifacts(flat)
     ];
   };

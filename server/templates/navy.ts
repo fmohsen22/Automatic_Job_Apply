@@ -3,7 +3,7 @@ import type { Bullet, CvSection, StructuredCv } from "../services/cvStructure.js
 // Recreation of the candidate's navy / energy CV design as an HTML/CSS template.
 // Rendered to PDF by Chromium. Pure presentation — content comes from StructuredCv.
 
-export function renderNavyTemplate(cv: StructuredCv): string {
+export function renderNavyTemplate(cv: StructuredCv, photoDataUrl?: string): string {
   const contact = (cv.contact ?? []).filter(Boolean).map(esc).join("  ·  ");
   const stats = (cv.stats ?? [])
     .map((s) => `<div class="stat"><div class="value">${esc(s.value)}</div>${s.label ? `<div class="label">${esc(s.label)}</div>` : ""}</div>`)
@@ -14,7 +14,9 @@ export function renderNavyTemplate(cv: StructuredCv): string {
   @page { size: A4; margin: 0; }
   * { box-sizing: border-box; }
   body { margin: 0; color: #1f2937; font-family: "Helvetica Neue", Arial, sans-serif; font-size: 10.3px; line-height: 1.5; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
-  .masthead { background: #14233b; color: #fff; padding: 26px 40px 18px; }
+  .masthead { background: #14233b; color: #fff; padding: 26px 40px 18px; display: flex; align-items: center; gap: 26px; }
+  .masthead .id { flex: 1; min-width: 0; }
+  .masthead .photo { flex: 0 0 auto; width: 104px; height: 104px; border-radius: 50%; object-fit: cover; border: 3px solid #c79a3c; }
   .masthead h1 { margin: 0; font-size: 30px; font-weight: 800; letter-spacing: 8px; text-transform: uppercase; }
   .headline { margin: 9px 0 0; color: #c79a3c; font-size: 12px; font-weight: 600; letter-spacing: 0.4px; }
   .contact { margin: 9px 0 0; color: #c2ccd8; font-size: 9.3px; }
@@ -43,9 +45,12 @@ export function renderNavyTemplate(cv: StructuredCv): string {
   .langs b { color: #14233b; }
 </style></head><body>
   <header class="masthead">
-    <h1>${esc(cv.name)}</h1>
-    ${cv.headline ? `<p class="headline">${esc(cv.headline)}</p>` : ""}
-    ${contact ? `<p class="contact">${contact}</p>` : ""}
+    <div class="id">
+      <h1>${esc(cv.name)}</h1>
+      ${cv.headline ? `<p class="headline">${esc(cv.headline)}</p>` : ""}
+      ${contact ? `<p class="contact">${contact}</p>` : ""}
+    </div>
+    ${photoDataUrl ? `<img class="photo" src="${photoDataUrl}" alt="" />` : ""}
   </header>
   ${stats ? `<div class="stats">${stats}</div>` : ""}
   <main>

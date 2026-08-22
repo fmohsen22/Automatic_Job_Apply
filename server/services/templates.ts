@@ -6,7 +6,7 @@ import { renderNavyTemplate } from "../templates/navy.js";
 export type PhotoSlot = { parts: string[]; size: number };
 
 export type CvTemplate =
-  | { id: string; name: string; description: string; kind: "html"; render: (cv: StructuredCv) => string }
+  | { id: string; name: string; description: string; kind: "html"; render: (cv: StructuredCv, photoDataUrl?: string) => string; wantsPhoto?: boolean }
   | { id: string; name: string; description: string; kind: "docx"; file: string; photo?: PhotoSlot };
 
 const DOCX_DIR = path.resolve(process.cwd(), "server", "templates", "docx");
@@ -26,8 +26,11 @@ export function templatePreviewPath(id: string): string | null {
   return existsSync(file) ? file : null;
 }
 
-// Built-in gallery. The navy template is HTML→PDF; the rest are real .docx
-// designs the candidate's tailored content is poured into (editable Word + PDF).
+// Built-in gallery, deliberately small: two designs that both render reliably
+// AND can hold a complete career history without deleting roles. The other
+// .docx designs remain in server/templates/docx/ but are unlisted — their
+// fixed slots forced the model to drop real work experience (visible CV gaps)
+// or broke visually under LibreOffice (photo-modern's skill bars).
 export const cvTemplates: CvTemplate[] = [
   {
     id: "navy",
@@ -36,16 +39,24 @@ export const cvTemplates: CvTemplate[] = [
     kind: "html",
     render: renderNavyTemplate
   },
-  { id: "ms-objective", name: "Simple Objective", description: "Clean header with objective, education, skills and experience. No photo.", kind: "docx", file: "ms-objective.docx" },
-  { id: "ms-classic", name: "Classic Header", description: "Centered name header with a profile and sectioned body. No photo.", kind: "docx", file: "ms-classic.docx" },
-  { id: "ms-professional", name: "Professional", description: "Professional resume with contact block and clear sections. No photo.", kind: "docx", file: "ms-professional.docx" },
-  { id: "ms-formal", name: "Formal", description: "Formal tabular layout with profile, education and experience. No photo.", kind: "docx", file: "ms-formal.docx" },
-  { id: "ats-clean", name: "ATS Clean", description: "Single-column, parser-friendly layout. Great for strict ATS. No photo.", kind: "docx", file: "ats-clean.docx" },
-  { id: "ats-modern", name: "ATS Modern", description: "Clean ATS-friendly layout with a modern accent. No photo.", kind: "docx", file: "ats-modern.docx" },
-  { id: "two-column", name: "Two-Column", description: "Sidebar with contact/skills and a main column for experience. No photo.", kind: "docx", file: "two-column.docx" },
-  { id: "infographic", name: "Modern Infographic", description: "Designed layout with icons and visual sections. No photo.", kind: "docx", file: "infographic.docx" },
-  { id: "photo-modern", name: "Photo — Modern", description: "Modern photo design with skill bars. Heads-up: the auto-PDF misaligns the bars (LibreOffice quirk) — the Word file is correct; open it and Save as PDF. Prefer Photo — Profile for a clean auto-PDF.", kind: "docx", file: "photo-modern.docx", photo: { parts: ["word/media/image1.jpg", "word/media/image2.jpeg"], size: 300 } },
-  { id: "photo-profile", name: "Photo — Profile", description: "Profile-style photo design — renders cleanly to PDF. The recommended photo template.", kind: "docx", file: "photo-profile.docx", photo: { parts: ["word/media/image1.jpg", "word/media/image2.jpeg"], size: 212 } }
+  {
+    id: "navy-photo",
+    name: "Photo — Navy",
+    description: "The Navy design with your profile photo in the header. Flows to two pages — complete career history, never clipped. Recommended photo template.",
+    kind: "html",
+    render: renderNavyTemplate,
+    wantsPhoto: true
+  },
+  // unlisted: { id: "ms-objective", name: "Simple Objective", description: "Clean header with objective, education, skills and experience. No photo.", kind: "docx", file: "ms-objective.docx" },
+  // unlisted: { id: "ms-classic", name: "Classic Header", description: "Centered name header with a profile and sectioned body. No photo.", kind: "docx", file: "ms-classic.docx" },
+  // unlisted: { id: "ms-professional", name: "Professional", description: "Professional resume with contact block and clear sections. No photo.", kind: "docx", file: "ms-professional.docx" },
+  // unlisted: { id: "ms-formal", name: "Formal", description: "Formal tabular layout with profile, education and experience. No photo.", kind: "docx", file: "ms-formal.docx" },
+  // unlisted: { id: "ats-clean", name: "ATS Clean", description: "Single-column, parser-friendly layout. Great for strict ATS. No photo.", kind: "docx", file: "ats-clean.docx" },
+  // unlisted: { id: "ats-modern", name: "ATS Modern", description: "Clean ATS-friendly layout with a modern accent. No photo.", kind: "docx", file: "ats-modern.docx" },
+  // unlisted: { id: "two-column", name: "Two-Column", description: "Sidebar with contact/skills and a main column for experience. No photo.", kind: "docx", file: "two-column.docx" },
+  // unlisted: { id: "infographic", name: "Modern Infographic", description: "Designed layout with icons and visual sections. No photo.", kind: "docx", file: "infographic.docx" },
+  // unlisted: { id: "photo-modern", name: "Photo — Modern", description: "Modern photo design with skill bars. Heads-up: the auto-PDF misaligns the bars (LibreOffice quirk) — the Word file is correct; open it and Save as PDF. Prefer Photo — Profile for a clean auto-PDF.", kind: "docx", file: "photo-modern.docx", photo: { parts: ["word/media/image1.jpg", "word/media/image2.jpeg"], size: 300 } },
+  // unlisted (fixed frames clip content in the PDF render): { id: "photo-profile", name: "Photo — Profile", description: "Profile-style photo design — renders cleanly to PDF. The recommended photo template.", kind: "docx", file: "photo-profile.docx", photo: { parts: ["word/media/image1.jpg", "word/media/image2.jpeg"], size: 212 } }
 ];
 
 export function getTemplate(id: string): CvTemplate | undefined {
@@ -58,7 +69,7 @@ export function listTemplates() {
     name: t.name,
     description: t.description,
     kind: t.kind,
-    needsPhoto: t.kind === "docx" && Boolean(t.photo),
+    needsPhoto: (t.kind === "docx" && Boolean(t.photo)) || (t.kind === "html" && Boolean(t.wantsPhoto)),
     previewUrl: templatePreviewPath(t.id) ? `/api/templates/${t.id}/preview.png` : null
   }));
 }

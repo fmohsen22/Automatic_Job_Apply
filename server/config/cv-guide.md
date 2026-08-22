@@ -17,6 +17,7 @@ Criteria every CV must meet:
 - Clarity: the important information visible within seconds; strongest content on page one.
 - Credibility: only claims the candidate can explain in an interview; every major skill backed by an example.
 - Structure: reverse chronology, consistent dates (e.g. "04/2025 - Present"), consistent locations.
+- Complete history: EVERY real position appears — deleting a role creates a visible employment gap, which reads worse than an unrelated role. Tailor by EMPHASIS: job-relevant roles get more and fuller bullets with bold lead-ins; less relevant roles are condensed to title, employer, dates and 1-2 lines but never removed.
 - Readability: short bullets, simple language, white space; no long paragraphs.
 - ATS: standard headings, selectable text, vacancy keywords used naturally.
 - Professionalism: zero grammar/spelling errors, no placeholders, no inconsistent formatting.
